@@ -1,7 +1,17 @@
 import asyncio
 from aiogram import Bot, Dispatcher
+from aiogram.types import BotCommand
 from config import BOT_TOKEN
 from handlers import start, ads
+
+async def set_commands(bot: Bot):
+    # إعداد قائمة الأوامر التي تظهر في زر (Menu)
+    commands = [
+        BotCommand(command="start", description="بدء التشغيل وعرض القائمة"),
+        BotCommand(command="create_ad", description="إنشاء إعلان جديد"),
+        BotCommand(command="my_ads", description="عرض إعلاناتي")
+    ]
+    await bot.set_my_commands(commands)
 
 async def main():
     if not BOT_TOKEN:
@@ -12,6 +22,9 @@ async def main():
     
     dp.include_router(start.router)
     dp.include_router(ads.router)
+    
+    # تسجيل الأوامر عند تشغيل البوت
+    await set_commands(bot)
     
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
