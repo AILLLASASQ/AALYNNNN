@@ -14,6 +14,23 @@ class AdForm(StatesGroup):
     waiting_for_btn_url = State()
 
 # ================= الدوال المساعدة =================
+def normalize_buttons(buttons_data):
+    """دالة لترتيب الأزرار كصفوف متوافقة مع التحديث الجديد وحماية الإعلانات القديمة"""
+    if not buttons_data: return []
+    if isinstance(buttons_data[0], list): return buttons_data
+    
+    # تحويل الأزرار القديمة (الخطية) إلى صفوف
+    formatted = []
+    row = []
+    for b in buttons_data:
+        row.append(b)
+        if len(row) == 3:
+            formatted.append(row)
+            row = []
+    if row:
+        formatted.append(row)
+    return formatted
+
 def get_main_menu():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="➕ إنشاء إعلان جديد", callback_data="create_ad")],
@@ -33,52 +50,48 @@ def get_merchant_id(telegram_id: str):
     return doc.to_dict().get("merchant_id") if doc.exists else None
 
 def build_ad_markup(buttons_list):
-    """بناء الكيبورد النهائي للإعلان (بدون أزرار التحكم)"""
+    """بناء الكيبورد النهائي للإعلان (للنشر)"""
+    buttons_list = normalize_buttons(buttons_list)
     keyboard = []
-    row = []
-    for btn in buttons_list:
-        row.append(InlineKeyboardButton(text=btn['text'], url=btn['url']))
-        if len(row) == 3: # حد أقصى 3 أزرار في السطر
-            keyboard.append(row)
-            row = []
-    if row:
-        keyboard.append(row)
+    for row in buttons_list:
+        keyboard.append([InlineKeyboardButton(text=btn['text'], url=btn['url']) for btn in row])
     return InlineKeyboardMarkup(inline_keyboard=keyboard) if keyboard else None
 
 def build_preview_keyboard(buttons_list):
-    """بناء كيبورد المعاينة (يحتوي على أزرار الإعلان + أزرار التحكم)"""
+    """بناء كيبورد المعاينة التفاعلي (Row Finisher)"""
+    buttons_list = normalize_buttons(buttons_list)
     keyboard = []
-    row = []
-    for btn in buttons_list:
-        row.append(InlineKeyboardButton(text=btn['text'], url=btn['url']))
-        if len(row) == 3:
-            keyboard.append(row)
-            row = []
-    if row:
-        keyboard.append(row)
+    for row in buttons_list:
+        keyboard.append([InlineKeyboardButton(text=btn['text'], url=btn['url']) for btn in row])
 
-    # أزرار التحكم بالأسفل
-    keyboard.append([InlineKeyboardButton(text="➕ إضافة زر جديد", callback_data="add_btn")])
+    # بناء أزرار التحكم الديناميكية
+    if not buttons_list:
+        keyboard.append([InlineKeyboardButton(text="➕ إضافة زر", callback_data="add_btn_new")])
+    else:
+        last_row_len = len(buttons_list[-1])
+        controls = []
+        if last_row_len < 3:
+            controls.append(InlineKeyboardButton(text="➕ إضافة زر بجانبه", callback_data="add_btn_same"))
+        controls.append(InlineKeyboardButton(text="⏬ سطر جديد (زر بالأسفل)", callback_data="add_btn_new"))
+        keyboard.append(controls)
+
     if buttons_list:
         keyboard.append([InlineKeyboardButton(text="🗑️ مسح الأزرار", callback_data="clear_btns")])
-    keyboard.append([InlineKeyboardButton(text="✅ إنهاء وحفظ (تخطي)", callback_data="finish_ad")])
+    keyboard.append([InlineKeyboardButton(text="✅ إنهاء وحفظ", callback_data="finish_ad")])
     
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 async def show_ad_preview(message: types.Message, state: FSMContext, edit_mode=False):
-    """دالة لعرض المعاينة الحية للإعلان"""
     data = await state.get_data()
     desc = data.get('description', '')
     photo_id = data.get('photo_id')
-    buttons = data.get('buttons', [])
+    buttons = normalize_buttons(data.get('buttons', []))
 
     markup = build_preview_keyboard(buttons)
     text_preview = f"👀 <b>معاينة الإعلان:</b>\n\n{desc}" if desc else "👀 <b>معاينة الإعلان:</b>\nبدون نص"
 
-    # لحذف رسالة المعاينة القديمة لتجنب تكرار الرسائل في الشاشة
     if edit_mode and data.get('preview_msg_id'):
-        try:
-            await message.bot.delete_message(message.chat.id, data['preview_msg_id'])
+        try: await message.bot.delete_message(message.chat.id, data['preview_msg_id'])
         except: pass
 
     if photo_id:
@@ -115,7 +128,7 @@ async def edit_content_prompt(callback: types.CallbackQuery, state: FSMContext):
     doc_id = callback.data.split("edit_content_")[1]
     doc = db.collection("ads").document(doc_id).get().to_dict()
     
-    await state.update_data(editing_doc_id=doc_id, buttons=doc.get('buttons', []))
+    await state.update_data(editing_doc_id=doc_id, buttons=normalize_buttons(doc.get('buttons', [])))
     await callback.message.answer("أرسل <b>الصورة والوصف الجديد</b>، أو <b>الوصف فقط</b>:", parse_mode="HTML")
     await state.set_state(AdForm.waiting_for_edit_content)
 
@@ -137,14 +150,17 @@ async def edit_buttons_prompt(callback: types.CallbackQuery, state: FSMContext):
         editing_doc_id=doc_id,
         description=doc.get('description', ''),
         photo_id=doc.get('photo_id'),
-        buttons=doc.get('buttons', [])
+        buttons=normalize_buttons(doc.get('buttons', []))
     )
     await show_ad_preview(callback.message, state)
     await callback.answer()
 
-# ================= إضافة الأزرار برمجياً =================
-@router.callback_query(F.data == "add_btn")
+# ================= نظام Row Finisher (توزيع الأزرار) =================
+@router.callback_query(F.data.startswith("add_btn_"))
 async def prompt_btn_text(callback: types.CallbackQuery, state: FSMContext):
+    is_new_row = (callback.data == "add_btn_new")
+    await state.update_data(start_new_row=is_new_row)
+
     msg = await callback.message.answer("✏️ أرسل <b>اسم الزر</b> الآن:", parse_mode="HTML")
     await state.update_data(prompt_msg_id=msg.message_id)
     await state.set_state(AdForm.waiting_for_btn_text)
@@ -155,13 +171,12 @@ async def process_btn_text(message: types.Message, state: FSMContext):
     await state.update_data(current_btn_text=message.text)
     data = await state.get_data()
     
-    # تنظيف الشاشة بحذف رسائل السؤال والجواب
     try: await message.bot.delete_message(message.chat.id, data.get('prompt_msg_id'))
     except: pass
     try: await message.delete()
     except: pass
 
-    msg = await message.answer("🔗 ممتاز. أرسل الآن <b>رابط الزر</b> (يجب أن يبدأ بـ http أو https أو t.me):", parse_mode="HTML")
+    msg = await message.answer("🔗 ممتاز. أرسل الآن <b>رابط الزر</b> (يجب أن يبدأ بـ https:// أو t.me/ حصراً لدواعي أمنية):", parse_mode="HTML")
     await state.update_data(prompt_msg_id=msg.message_id)
     await state.set_state(AdForm.waiting_for_btn_url)
 
@@ -175,18 +190,35 @@ async def process_btn_url(message: types.Message, state: FSMContext):
     try: await message.delete()
     except: pass
 
-    if not url.startswith(('http://', 'https://', 't.me/')):
-        msg = await message.answer("❌ الرابط غير صحيح. يجب أن يبدأ بـ http أو https أو t.me.\nأرسل الرابط مجدداً:")
+    if not url.startswith(('https://', 't.me/')):
+        msg = await message.answer("❌ الرابط غير آمن أو غير صحيح. يجب أن يبدأ بـ <b>https://</b> أو <b>t.me/</b> حصراً.\nأرسل الرابط مجدداً:", parse_mode="HTML")
         await state.update_data(prompt_msg_id=msg.message_id)
         return
 
-    buttons = data.get('buttons', [])
-    buttons.append({'text': data['current_btn_text'], 'url': url})
+    buttons = normalize_buttons(data.get('buttons', []))
+    start_new_row = data.get('start_new_row', True)
+    new_btn = {'text': data['current_btn_text'], 'url': url}
+
+    # إضافة الزر حسب اختيار المستخدم للسطر
+    if start_new_row or not buttons:
+        buttons.append([new_btn])
+    else:
+        buttons[-1].append(new_btn)
+        
     await state.update_data(buttons=buttons)
 
-    # تحديث المعاينة الحية
-    await show_ad_preview(message, state, edit_mode=True)
-    await state.set_state(None)
+    try:
+        await show_ad_preview(message, state, edit_mode=True)
+        await state.set_state(None)
+    except Exception as e:
+        # إذا رفض تيليجرام الرابط، نلغي الإضافة الأخيرة
+        if start_new_row or len(buttons[-1]) == 1:
+            buttons.pop()
+        else:
+            buttons[-1].pop()
+        await state.update_data(buttons=buttons)
+        msg = await message.answer("❌ عذراً، تيليجرام يرفض هذا الرابط برمجياً. يرجى إرسال رابط صالح:")
+        await state.update_data(prompt_msg_id=msg.message_id)
 
 @router.callback_query(F.data == "clear_btns")
 async def clear_btns(callback: types.CallbackQuery, state: FSMContext):
@@ -199,7 +231,7 @@ async def clear_btns(callback: types.CallbackQuery, state: FSMContext):
 async def finish_ad(callback: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
     merchant_id = get_merchant_id(str(callback.message.chat.id))
-    buttons_data = data.get('buttons', [])
+    buttons_data = normalize_buttons(data.get('buttons', []))
     
     try: await callback.message.bot.delete_message(callback.message.chat.id, data.get('preview_msg_id'))
     except: pass
