@@ -1,3 +1,4 @@
+import json
 from aiogram import Router, types, F
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -15,6 +16,15 @@ class AdForm(StatesGroup):
 
 # ================= الدوال المساعدة =================
 def normalize_buttons(buttons_data):
+    if not buttons_data: return []
+    
+    # فك التشفير إذا كانت البيانات قادمة من فايربيس كنص (الحل لمشكلة Nested arrays)
+    if isinstance(buttons_data, str):
+        try:
+            buttons_data = json.loads(buttons_data)
+        except:
+            return []
+            
     if not buttons_data: return []
     if isinstance(buttons_data[0], list): return buttons_data
     
@@ -225,9 +235,11 @@ async def finish_ad(callback: types.CallbackQuery, state: FSMContext):
     try:
         data = await state.get_data()
         merchant_id = get_merchant_id(str(callback.from_user.id))
-        buttons_data = normalize_buttons(data.get('buttons', []))
         
-        # إخفاء أزرار التحكم في رسالة المعاينة بدلاً من حذفها لتجنب شعور "اختفاء كل شيء"
+        # تحويل الأزرار إلى JSON String لحل مشكلة فايربيس
+        buttons_data = normalize_buttons(data.get('buttons', []))
+        buttons_json = json.dumps(buttons_data) 
+        
         try: await callback.message.edit_reply_markup(reply_markup=None)
         except: pass
 
@@ -236,7 +248,7 @@ async def finish_ad(callback: types.CallbackQuery, state: FSMContext):
             db.collection("ads").document(doc_id).update({
                 "description": data.get('description', ''),
                 "photo_id": data.get('photo_id'),
-                "buttons": buttons_data
+                "buttons": buttons_json # حفظ كنص
             })
             short_id = db.collection("ads").document(doc_id).get().to_dict().get('ad_id')
             await callback.message.answer(f"✅ تم التحديث بنجاح! رقم الإعلان: <code>{short_id}</code>", parse_mode="HTML", reply_markup=get_main_menu())
@@ -249,7 +261,7 @@ async def finish_ad(callback: types.CallbackQuery, state: FSMContext):
                 "merchant_id": merchant_id,
                 "description": data.get('description', ''),
                 "photo_id": data.get('photo_id'),
-                "buttons": buttons_data
+                "buttons": buttons_json # حفظ كنص
             })
             success_text = (
                 f"✅ <b>تم إنشاء إعلانك بنجاح!</b>\n\n"
@@ -297,7 +309,6 @@ async def list_my_ads(callback: types.CallbackQuery):
     try: await callback.message.edit_text("📋 <b>قائمة إعلاناتك:</b>", parse_mode="HTML", reply_markup=markup)
     except: pass
 
-# الدالة المفقودة التي كانت تمنع ظهور الإعلان عند الضغط عليه
 @router.callback_query(F.data.startswith("view_ad_"))
 async def view_ad_details(callback: types.CallbackQuery):
     doc_id = callback.data.split("view_ad_")[1]
