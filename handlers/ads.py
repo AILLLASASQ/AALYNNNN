@@ -269,50 +269,51 @@ async def finish_ad(callback: types.CallbackQuery, state: FSMContext):
 # ================= عرض وإدارة الإعلانات =================
 @router.callback_query(F.data == "list_ads")
 async def list_my_ads(callback: types.CallbackQuery):
+    await callback.answer() # إنهاء حالة تحميل الزر
+    
     merchant_id = get_merchant_id(str(callback.from_user.id))
+    if not merchant_id:
+        await callback.message.answer("❌ يرجى الضغط على /start لتحديث بياناتك في النظام.")
+        return
+
     ads = list(db.collection("ads").where("merchant_id", "==", merchant_id).stream())
     
     if not ads:
-        await callback.message.edit_text("ليس لديك إعلانات حالياً.", reply_markup=get_main_menu())
+        try:
+            await callback.message.edit_text("ليس لديك إعلانات حالياً.", reply_markup=get_main_menu())
+        except: 
+            pass # تجاهل الخطأ إذا كانت الرسالة لم تتغير
         return
 
     keyboard = []
     for ad in ads:
         ad_data = ad.to_dict()
-        short_desc = ad_data.get('description', 'إعلان بصورة')[:15] + "..."
+        
+        # حماية من خطأ الوصف الفارغ
+        desc = ad_data.get('description', '')
+        if not desc or str(desc).strip() == "":
+            desc = "إعلان بصورة"
+            
+        # إزالة النزول لسطر جديد من العنوان لتجنب تشوه شكل الزر
+        short_desc = str(desc)[:15].replace("\n", " ") + "..."
         keyboard.append([InlineKeyboardButton(text=f"📢 {short_desc} ({ad_data['ad_id']})", callback_data=f"view_ad_{ad_data['doc_id']}")])
     
     keyboard.append([InlineKeyboardButton(text="🔙 رجوع", callback_data="start_menu")])
     markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
     
-    await callback.message.edit_text("📋 <b>قائمة إعلاناتك:</b>", parse_mode="HTML", reply_markup=markup)
+    try:
+        await callback.message.edit_text("📋 <b>قائمة إعلاناتك:</b>", parse_mode="HTML", reply_markup=markup)
+    except: 
+        pass
 
 @router.callback_query(F.data == "start_menu")
 async def return_to_start(callback: types.CallbackQuery):
-    await callback.message.edit_text("اختر ما تود القيام به:", reply_markup=get_main_menu())
-
-@router.callback_query(F.data.startswith("view_ad_"))
-async def view_ad_details(callback: types.CallbackQuery):
-    doc_id = callback.data.split("view_ad_")[1]
-    doc = db.collection("ads").document(doc_id).get()
+    await callback.answer()
+    try:
+        await callback.message.edit_text("اختر ما تود القيام به:", reply_markup=get_main_menu())
+    except: 
+        pass
     
-    if not doc.exists:
-        await callback.answer("❌ الإعلان غير موجود.", show_alert=True)
-        return
-        
-    ad = doc.to_dict()
-    desc = ad.get('description', '')
-    photo_id = ad.get('photo_id')
-    markup = build_ad_markup(ad.get('buttons', []))
-    
-    await callback.message.delete()
-    if photo_id:
-        await callback.message.answer_photo(photo=photo_id, caption=desc, reply_markup=markup)
-    else:
-        await callback.message.answer(desc or "بدون نص", reply_markup=markup)
-        
-    await callback.message.answer(f"⚙️ <b>أدوات التحكم بالإعلان ({ad['ad_id']})</b>", parse_mode="HTML", reply_markup=get_ad_controls(doc_id))
-
 @router.callback_query(F.data.startswith("delete_ad_"))
 async def delete_ad(callback: types.CallbackQuery):
     doc_id = callback.data.split("delete_ad_")[1]
