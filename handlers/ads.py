@@ -1,8 +1,10 @@
 import json
+import asyncio
 from aiogram import Router, types, F
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, InlineQuery, InlineQueryResultArticle, InputTextMessageContent, InlineQueryResultCachedPhoto
+from aiogram.exceptions import TelegramBadRequest
 from database import db
 
 router = Router()
@@ -15,6 +17,14 @@ class AdForm(StatesGroup):
     waiting_for_btn_url = State()
     waiting_for_specific_btn_text = State()
     waiting_for_specific_btn_url = State()
+
+# ================= دوال قاعدة البيانات (مساعدة للتزامن) =================
+# هذه الدوال تساعدنا على تشغيل استعلامات Firebase في خلفية منفصلة (Thread)
+def fetch_ads_by_merchant(merchant_id):
+    return list(db.collection("ads").where("merchant_id", "==", merchant_id).stream())
+
+def search_ad_by_id(query):
+    return list(db.collection("ads").where("ad_id", "==", query).limit(1).stream())
 
 # ================= الدوال المساعدة =================
 def normalize_buttons(buttons_data):
@@ -97,8 +107,9 @@ def build_preview_keyboard(buttons_list):
     
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
-def get_merchant_id(telegram_id: str):
-    doc = db.collection("merchants").document(telegram_id).get()
+async def get_merchant_id(telegram_id: str):
+    # استخدام asyncio.to_thread لمنع تجميد البوت أثناء الاتصال بقاعدة البيانات
+    doc = await asyncio.to_thread(db.collection("merchants").document(telegram_id).get)
     return doc.to_dict().get("merchant_id") if doc.exists else None
 
 async def show_ad_preview(message: types.Message, state: FSMContext, edit_mode=False):
@@ -111,8 +122,10 @@ async def show_ad_preview(message: types.Message, state: FSMContext, edit_mode=F
     text_preview = f"👀 <b>معاينة الإعلان:</b>\n\n{desc}" if desc else "👀 <b>معاينة الإعلان:</b>\nبدون نص"
 
     if edit_mode and data.get('preview_msg_id'):
-        try: await message.bot.delete_message(message.chat.id, data['preview_msg_id'])
-        except: pass
+        try:
+            await message.bot.delete_message(message.chat.id, data['preview_msg_id'])
+        except TelegramBadRequest:
+            pass # تم حذف الرسالة مسبقاً أو غير موجودة
 
     if photo_id:
         sent_msg = await message.answer_photo(photo=photo_id, caption=text_preview, reply_markup=markup, parse_mode="HTML")
@@ -145,9 +158,9 @@ async def show_help(callback: types.CallbackQuery):
 # ================= إنشاء وتعديل المحتوى =================
 @router.callback_query(F.data == "create_ad")
 async def start_creating_ad(callback: types.CallbackQuery, state: FSMContext):
-    merchant_id = get_merchant_id(str(callback.from_user.id))
+    merchant_id = await get_merchant_id(str(callback.from_user.id))
     
-    ads = list(db.collection("ads").where("merchant_id", "==", merchant_id).stream())
+    ads = await asyncio.to_thread(fetch_ads_by_merchant, merchant_id)
     if len(ads) >= 5:
         await callback.answer("❌ الحد الأقصى 5 إعلانات. احذف إعلاناً لإضافة جديد.", show_alert=True)
         return
@@ -167,9 +180,15 @@ async def process_content(message: types.Message, state: FSMContext):
 @router.callback_query(F.data.startswith("edit_content_"))
 async def edit_content_prompt(callback: types.CallbackQuery, state: FSMContext):
     doc_id = callback.data.split("edit_content_")[1]
-    doc = db.collection("ads").document(doc_id).get().to_dict()
+    doc_snapshot = await asyncio.to_thread(db.collection("ads").document(doc_id).get)
+    doc = doc_snapshot.to_dict()
     
-    await state.update_data(editing_doc_id=doc_id, buttons=normalize_buttons(doc.get('buttons', [])))
+    # تحسين: تخزين ad_id لتجنب قراءته لاحقاً من قاعدة البيانات مرة أخرى
+    await state.update_data(
+        editing_doc_id=doc_id, 
+        ad_id=doc.get('ad_id'), 
+        buttons=normalize_buttons(doc.get('buttons', []))
+    )
     await callback.message.answer("أرسل <b>الصورة والوصف الجديد</b>، أو <b>الوصف فقط</b>:", parse_mode="HTML")
     await state.set_state(AdForm.waiting_for_edit_content)
 
@@ -185,10 +204,12 @@ async def process_edit_content(message: types.Message, state: FSMContext):
 @router.callback_query(F.data.startswith("edit_buttons_"))
 async def edit_buttons_prompt(callback: types.CallbackQuery, state: FSMContext):
     doc_id = callback.data.split("edit_buttons_")[1]
-    doc = db.collection("ads").document(doc_id).get().to_dict()
+    doc_snapshot = await asyncio.to_thread(db.collection("ads").document(doc_id).get)
+    doc = doc_snapshot.to_dict()
     
     await state.update_data(
         editing_doc_id=doc_id,
+        ad_id=doc.get('ad_id'), # تخزين المعرف هنا أيضاً للتحسين
         description=doc.get('description', ''),
         photo_id=doc.get('photo_id'),
         buttons=normalize_buttons(doc.get('buttons', []))
@@ -213,9 +234,9 @@ async def process_btn_text(message: types.Message, state: FSMContext):
     data = await state.get_data()
     
     try: await message.bot.delete_message(message.chat.id, data.get('prompt_msg_id'))
-    except: pass
+    except TelegramBadRequest: pass
     try: await message.delete()
-    except: pass
+    except TelegramBadRequest: pass
 
     msg = await message.answer("🔗 ممتاز. أرسل الآن <b>رابط الزر</b> (https:// أو t.me/):", parse_mode="HTML")
     await state.update_data(prompt_msg_id=msg.message_id)
@@ -227,12 +248,13 @@ async def process_btn_url(message: types.Message, state: FSMContext):
     data = await state.get_data()
 
     try: await message.bot.delete_message(message.chat.id, data.get('prompt_msg_id'))
-    except: pass
+    except TelegramBadRequest: pass
     try: await message.delete()
-    except: pass
+    except TelegramBadRequest: pass
 
-    if not url.startswith(('https://', 't.me/')):
-        msg = await message.answer("❌ الرابط غير صحيح. يجب أن يبدأ بـ <b>https://</b> أو <b>t.me/</b> حصراً.\nأرسل الرابط مجدداً:", parse_mode="HTML")
+    # التحسين: التأكد من أن الرابط ليس مجرد https:// فارغة
+    if not url.startswith(('https://', 't.me/')) or len(url) < 10:
+        msg = await message.answer("❌ الرابط غير صحيح. يجب أن يبدأ بـ <b>https://</b> أو <b>t.me/</b> ويكون كاملاً حصراً.\nأرسل الرابط مجدداً:", parse_mode="HTML")
         await state.update_data(prompt_msg_id=msg.message_id)
         return
 
@@ -278,7 +300,7 @@ async def select_btn_to_edit(callback: types.CallbackQuery, state: FSMContext):
     markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
     
     try: await callback.message.bot.delete_message(callback.message.chat.id, data.get('preview_msg_id'))
-    except: pass
+    except TelegramBadRequest: pass
     
     sent_msg = await callback.message.answer("اختر الزر الذي تود تعديله من القائمة أدناه:", reply_markup=markup)
     await state.update_data(preview_msg_id=sent_msg.message_id)
@@ -305,9 +327,9 @@ async def process_specific_btn_text(message: types.Message, state: FSMContext):
     data = await state.get_data()
     
     try: await message.bot.delete_message(message.chat.id, data.get('prompt_msg_id'))
-    except: pass
+    except TelegramBadRequest: pass
     try: await message.delete()
-    except: pass
+    except TelegramBadRequest: pass
 
     msg = await message.answer("🔗 ممتاز. أرسل الآن <b>الرابط الجديد</b> (https:// أو t.me/):", parse_mode="HTML")
     await state.update_data(prompt_msg_id=msg.message_id)
@@ -319,11 +341,12 @@ async def process_specific_btn_url(message: types.Message, state: FSMContext):
     data = await state.get_data()
 
     try: await message.bot.delete_message(message.chat.id, data.get('prompt_msg_id'))
-    except: pass
+    except TelegramBadRequest: pass
     try: await message.delete()
-    except: pass
+    except TelegramBadRequest: pass
 
-    if not url.startswith(('https://', 't.me/')):
+    # التحسين: التأكد من صحة الرابط وطوله
+    if not url.startswith(('https://', 't.me/')) or len(url) < 10:
         msg = await message.answer("❌ الرابط غير صحيح. يجب أن يبدأ بـ <b>https://</b> أو <b>t.me/</b> حصراً.\nأرسل الرابط مجدداً:", parse_mode="HTML")
         await state.update_data(prompt_msg_id=msg.message_id)
         return
@@ -370,40 +393,42 @@ async def clear_btns(callback: types.CallbackQuery, state: FSMContext):
 async def finish_ad(callback: types.CallbackQuery, state: FSMContext):
     try:
         data = await state.get_data()
-        merchant_id = get_merchant_id(str(callback.from_user.id))
+        merchant_id = await get_merchant_id(str(callback.from_user.id))
         
         buttons_data = normalize_buttons(data.get('buttons', []))
         buttons_json = json.dumps(buttons_data) 
         
         try: await callback.message.edit_reply_markup(reply_markup=None)
-        except: pass
+        except TelegramBadRequest: pass
 
         if data.get('editing_doc_id'):
             doc_id = data['editing_doc_id']
-            
-            # التغيير هنا: استخدمنا set مع merge=True بدلاً من update لمنع خطأ 404
-            db.collection("ads").document(doc_id).set({
+            update_data = {
                 "description": data.get('description', ''),
                 "photo_id": data.get('photo_id'),
                 "buttons": buttons_json 
-            }, merge=True)
+            }
+            # استخدام to_thread لتجنب التعليق
+            await asyncio.to_thread(db.collection("ads").document(doc_id).set, update_data, merge=True)
             
-            # جلب البيانات بشكل آمن لتجنب أي أخطاء أخرى
-            doc_data = db.collection("ads").document(doc_id).get().to_dict()
-            short_id = doc_data.get('ad_id') if doc_data else doc_id[:6].upper()
+            # التحسين: لا نقوم بقراءة الإعلان مجدداً من القاعدة لجلب الـ ID، نستخدم المخزن في State
+            short_id = data.get('ad_id') or doc_id[:6].upper()
             
             await callback.message.answer(f"✅ تم التحديث بنجاح! رقم الإعلان: <code>{short_id}</code>", parse_mode="HTML", reply_markup=get_main_menu())
         else:
             ad_ref = db.collection("ads").document()
             short_id = ad_ref.id[:6].upper()
-            ad_ref.set({
+            new_data = {
                 "doc_id": ad_ref.id,
                 "ad_id": short_id,
                 "merchant_id": merchant_id,
                 "description": data.get('description', ''),
                 "photo_id": data.get('photo_id'),
                 "buttons": buttons_json 
-            })
+            }
+            # استخدام to_thread هنا أيضاً
+            await asyncio.to_thread(ad_ref.set, new_data)
+
             success_text = (
                 f"✅ <b>تم إنشاء إعلانك بنجاح!</b>\n\n"
                 f"🆔 <b>رقم الإعلان:</b> <code>{short_id}</code>\n\n"
@@ -422,16 +447,17 @@ async def finish_ad(callback: types.CallbackQuery, state: FSMContext):
 async def list_my_ads(callback: types.CallbackQuery):
     await callback.answer()
     
-    merchant_id = get_merchant_id(str(callback.from_user.id))
+    merchant_id = await get_merchant_id(str(callback.from_user.id))
     if not merchant_id:
         await callback.message.answer("❌ يرجى الضغط على /start لتحديث بياناتك في النظام.")
         return
 
-    ads = list(db.collection("ads").where("merchant_id", "==", merchant_id).stream())
+    # استخدام to_thread لجلب الإعلانات في الخلفية
+    ads = await asyncio.to_thread(fetch_ads_by_merchant, merchant_id)
     
     if not ads:
         try: await callback.message.edit_text("ليس لديك إعلانات حالياً.", reply_markup=get_main_menu())
-        except: pass
+        except TelegramBadRequest: pass
         return
 
     keyboard = []
@@ -448,26 +474,25 @@ async def list_my_ads(callback: types.CallbackQuery):
     markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
     
     try: await callback.message.edit_text("📋 <b>قائمة إعلاناتك:</b>", parse_mode="HTML", reply_markup=markup)
-    except: pass
+    except TelegramBadRequest: pass
 
 @router.callback_query(F.data.startswith("view_ad_"))
 async def view_ad_details(callback: types.CallbackQuery):
     doc_id = callback.data.split("view_ad_")[1]
-    doc = db.collection("ads").document(doc_id).get()
+    doc_snapshot = await asyncio.to_thread(db.collection("ads").document(doc_id).get)
     
-    if not doc.exists:
+    if not doc_snapshot.exists:
         await callback.answer("❌ الإعلان غير موجود.", show_alert=True)
         return
         
-    ad = doc.to_dict()
+    ad = doc_snapshot.to_dict()
     desc = ad.get('description', '')
     photo_id = ad.get('photo_id')
     
-    # استخدام كيبورد الدمج الشامل هنا
     markup = build_merged_keyboard(ad.get('buttons', []), doc_id)
     
     try: await callback.message.delete()
-    except: pass
+    except TelegramBadRequest: pass
     
     if photo_id:
         await callback.message.answer_photo(photo=photo_id, caption=desc, reply_markup=markup)
@@ -480,12 +505,13 @@ async def view_ad_details(callback: types.CallbackQuery):
 async def return_to_start(callback: types.CallbackQuery):
     await callback.answer()
     try: await callback.message.edit_text("اختر ما تود القيام به:", reply_markup=get_main_menu())
-    except: pass
+    except TelegramBadRequest: pass
     
 @router.callback_query(F.data.startswith("delete_ad_"))
 async def delete_ad(callback: types.CallbackQuery):
     doc_id = callback.data.split("delete_ad_")[1]
-    db.collection("ads").document(doc_id).delete()
+    # حذف غير متزامن لتفادي التجميد
+    await asyncio.to_thread(db.collection("ads").document(doc_id).delete)
     await callback.answer("✅ تم الحذف!", show_alert=True)
     await list_my_ads(callback)
 
@@ -495,15 +521,14 @@ async def inline_ad_search(inline_query: InlineQuery):
     query = inline_query.query.strip().upper()
     if not query: return
 
-    ads_query = db.collection("ads").where("ad_id", "==", query).limit(1).stream()
-    ads_list = list(ads_query)
+    # جلب غير متزامن أثناء البحث بالإنلاين ليكون البوت سريعاً جداً
+    ads_list = await asyncio.to_thread(search_ad_by_id, query)
     if not ads_list: return
 
     ad_data = ads_list[0].to_dict()
     desc = ad_data.get('description', '')
     photo_id = ad_data.get('photo_id')
     
-    # الكيبورد الموجه للزبائن (بدون أدوات التعديل)
     markup = build_ad_markup(ad_data.get('buttons', []))
 
     title_text = desc[:30] + "..." if desc else "إعلان بصورة"
