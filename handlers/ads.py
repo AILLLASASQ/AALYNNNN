@@ -44,26 +44,36 @@ def get_main_menu():
         [InlineKeyboardButton(text="ℹ️ شرح الاستخدام", callback_data="help_usage")]
     ])
 
-def get_ad_controls(doc_id: str):
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✏️ تعديل المحتوى", callback_data=f"edit_content_{doc_id}"),
-         InlineKeyboardButton(text="🔘 تعديل الأزرار", callback_data=f"edit_buttons_{doc_id}")],
-        [InlineKeyboardButton(text="🗑️ حذف الإعلان", callback_data=f"delete_ad_{doc_id}")],
-        [InlineKeyboardButton(text="🔙 رجوع للقائمة", callback_data="list_ads")]
-    ])
-
-def get_merchant_id(telegram_id: str):
-    doc = db.collection("merchants").document(telegram_id).get()
-    return doc.to_dict().get("merchant_id") if doc.exists else None
-
 def build_ad_markup(buttons_list):
+    """الكيبورد النهائي عند إرسال الإعلان للجروبات عبر الإنلاين"""
     buttons_list = normalize_buttons(buttons_list)
     keyboard = []
     for row in buttons_list:
         keyboard.append([InlineKeyboardButton(text=btn['text'], url=btn['url']) for btn in row])
     return InlineKeyboardMarkup(inline_keyboard=keyboard) if keyboard else None
 
+def build_merged_keyboard(buttons_list, doc_id):
+    """الكيبورد المدمج لعرض الإعلان + أدوات التحكم للتاجر في رسالة واحدة"""
+    buttons_list = normalize_buttons(buttons_list)
+    keyboard = []
+    
+    # 1. أزرار الإعلان الخاصة بالتاجر
+    for row in buttons_list:
+        keyboard.append([InlineKeyboardButton(text=btn['text'], url=btn['url']) for btn in row])
+        
+    # 2. الزر الوهمي الفاصل
+    keyboard.append([InlineKeyboardButton(text="⬇️ أدوات إدارة الإعلان ⬇️", callback_data="ignore_btn")])
+    
+    # 3. أزرار التحكم بالإعلان
+    keyboard.append([InlineKeyboardButton(text="✏️ تعديل المحتوى", callback_data=f"edit_content_{doc_id}"),
+                     InlineKeyboardButton(text="🔘 تعديل الأزرار", callback_data=f"edit_buttons_{doc_id}")])
+    keyboard.append([InlineKeyboardButton(text="🗑️ حذف الإعلان", callback_data=f"delete_ad_{doc_id}")])
+    keyboard.append([InlineKeyboardButton(text="🔙 رجوع للقائمة", callback_data="list_ads")])
+    
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
 def build_preview_keyboard(buttons_list):
+    """الكيبورد أثناء مرحلة الإنشاء وإضافة الأزرار"""
     buttons_list = normalize_buttons(buttons_list)
     keyboard = []
     for row in buttons_list:
@@ -87,6 +97,10 @@ def build_preview_keyboard(buttons_list):
     
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
+def get_merchant_id(telegram_id: str):
+    doc = db.collection("merchants").document(telegram_id).get()
+    return doc.to_dict().get("merchant_id") if doc.exists else None
+
 async def show_ad_preview(message: types.Message, state: FSMContext, edit_mode=False):
     data = await state.get_data()
     desc = data.get('description', '')
@@ -107,21 +121,24 @@ async def show_ad_preview(message: types.Message, state: FSMContext, edit_mode=F
 
     await state.update_data(preview_msg_id=sent_msg.message_id)
 
-# ================= شرح الاستخدام (الجديد) =================
+# ================= التفاعل مع الزر الوهمي =================
+@router.callback_query(F.data == "ignore_btn")
+async def ignore_btn_click(callback: types.CallbackQuery):
+    await callback.answer("هذا زر تنظيمي للفصل بين إعلانك وأدوات التحكم ⚙️")
+
+# ================= شرح الاستخدام =================
 @router.callback_query(F.data == "help_usage")
 async def show_help(callback: types.CallbackQuery):
     help_text = (
         "📚 <b>دليل استخدام نظام الإعلانات:</b>\n\n"
         "1️⃣ <b>الإنشاء:</b> اضغط على (إنشاء إعلان جديد)، ثم أرسل صورة مع وصف، أو وصف نصي فقط للإعلان.\n"
-        "2️⃣ <b>إضافة الأزرار:</b> بعد إرسال المحتوى، ستظهر لك لوحة تحكم تتيح لك إضافة أزرار (روابط) وتوزيعها بشكل جميل (زر بجانب زر، أو في سطر جديد).\n"
-        "3️⃣ <b>النشر السريع (الإنلاين):</b> بعد الحفظ، ستحصل على (رقم الإعلان). للقيام بنشر إعلانك في أي محادثة أو جروب، اكتب يوزر البوت متبوعاً برقم الإعلان.\n"
+        "2️⃣ <b>إضافة الأزرار:</b> بعد إرسال المحتوى، ستظهر لك لوحة تحكم تتيح لك إضافة أزرار وتوزيعها بشكل جميل.\n"
+        "3️⃣ <b>النشر السريع (الإنلاين):</b> بعد الحفظ، ستحصل على (رقم الإعلان). للقيام بنشر إعلانك في أي محادثة، اكتب يوزر البوت متبوعاً برقم الإعلان.\n"
         "   <i>مثال توضيحي:</i> <code>@يوزر_البوت 1A2B3C</code>\n\n"
-        "4️⃣ <b>إدارة الإعلانات:</b> قسم (إعلاناتي) يتيح لك تعديل النصوص، الأزرار، أو حذف الإعلانات القديمة.\n\n"
-        "💡 <i>ملاحظة: الحد الأقصى لكل تاجر هو 5 إعلانات. لتغيير أو إضافة إعلان جديد يجب حذف إعلان قديم.</i>"
+        "4️⃣ <b>إدارة الإعلانات:</b> قسم (إعلاناتي) يتيح لك تعديل الإعلانات المحفوظة.\n\n"
+        "💡 <i>ملاحظة: الحد الأقصى 5 إعلانات للتاجر.</i>"
     )
-    markup = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔙 رجوع", callback_data="start_menu")]
-    ])
+    markup = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 رجوع", callback_data="start_menu")]])
     await callback.message.edit_text(help_text, parse_mode="HTML", reply_markup=markup)
     await callback.answer()
 
@@ -439,7 +456,9 @@ async def view_ad_details(callback: types.CallbackQuery):
     ad = doc.to_dict()
     desc = ad.get('description', '')
     photo_id = ad.get('photo_id')
-    markup = build_ad_markup(ad.get('buttons', []))
+    
+    # استخدام كيبورد الدمج الشامل هنا
+    markup = build_merged_keyboard(ad.get('buttons', []), doc_id)
     
     try: await callback.message.delete()
     except: pass
@@ -449,7 +468,6 @@ async def view_ad_details(callback: types.CallbackQuery):
     else:
         await callback.message.answer(desc or "بدون نص", reply_markup=markup)
         
-    await callback.message.answer(f"⚙️ <b>أدوات التحكم بالإعلان ({ad['ad_id']})</b>", parse_mode="HTML", reply_markup=get_ad_controls(doc_id))
     await callback.answer()
 
 @router.callback_query(F.data == "start_menu")
@@ -478,6 +496,8 @@ async def inline_ad_search(inline_query: InlineQuery):
     ad_data = ads_list[0].to_dict()
     desc = ad_data.get('description', '')
     photo_id = ad_data.get('photo_id')
+    
+    # الكيبورد الموجه للزبائن (بدون أدوات التعديل)
     markup = build_ad_markup(ad_data.get('buttons', []))
 
     title_text = desc[:30] + "..." if desc else "إعلان بصورة"
