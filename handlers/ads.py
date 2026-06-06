@@ -13,17 +13,15 @@ class AdForm(StatesGroup):
     waiting_for_edit_content = State()
     waiting_for_btn_text = State()
     waiting_for_btn_url = State()
+    waiting_for_specific_btn_text = State() # حالة جديدة لتعديل اسم زر موجود
+    waiting_for_specific_btn_url = State()  # حالة جديدة لتعديل رابط زر موجود
 
 # ================= الدوال المساعدة =================
 def normalize_buttons(buttons_data):
     if not buttons_data: return []
-    
-    # فك التشفير إذا كانت البيانات قادمة من فايربيس كنص (الحل لمشكلة Nested arrays)
     if isinstance(buttons_data, str):
-        try:
-            buttons_data = json.loads(buttons_data)
-        except:
-            return []
+        try: buttons_data = json.loads(buttons_data)
+        except: return []
             
     if not buttons_data: return []
     if isinstance(buttons_data[0], list): return buttons_data
@@ -81,7 +79,9 @@ def build_preview_keyboard(buttons_list):
         keyboard.append(controls)
 
     if buttons_list:
-        keyboard.append([InlineKeyboardButton(text="🗑️ مسح الأزرار", callback_data="clear_btns")])
+        keyboard.append([InlineKeyboardButton(text="✏️ تعديل زر معين", callback_data="select_btn_to_edit")])
+        keyboard.append([InlineKeyboardButton(text="🗑️ مسح كل الأزرار", callback_data="clear_btns")])
+        
     keyboard.append([InlineKeyboardButton(text="✅ إنهاء وحفظ", callback_data="finish_ad")])
     
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
@@ -160,7 +160,7 @@ async def edit_buttons_prompt(callback: types.CallbackQuery, state: FSMContext):
     await show_ad_preview(callback.message, state)
     await callback.answer()
 
-# ================= توزيع الأزرار =================
+# ================= إضافة الأزرار =================
 @router.callback_query(F.data.startswith("add_btn_"))
 async def prompt_btn_text(callback: types.CallbackQuery, state: FSMContext):
     is_new_row = (callback.data == "add_btn_new")
@@ -181,7 +181,7 @@ async def process_btn_text(message: types.Message, state: FSMContext):
     try: await message.delete()
     except: pass
 
-    msg = await message.answer("🔗 ممتاز. أرسل الآن <b>رابط الزر</b> (يجب أن يبدأ بـ https:// أو t.me/ حصراً):", parse_mode="HTML")
+    msg = await message.answer("🔗 ممتاز. أرسل الآن <b>رابط الزر</b> (https:// أو t.me/):", parse_mode="HTML")
     await state.update_data(prompt_msg_id=msg.message_id)
     await state.set_state(AdForm.waiting_for_btn_url)
 
@@ -223,6 +223,109 @@ async def process_btn_url(message: types.Message, state: FSMContext):
         msg = await message.answer("❌ عذراً، تيليجرام يرفض هذا الرابط. يرجى إرسال رابط صالح:")
         await state.update_data(prompt_msg_id=msg.message_id)
 
+# ================= تعديل زر معين =================
+@router.callback_query(F.data == "select_btn_to_edit")
+async def select_btn_to_edit(callback: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    buttons = normalize_buttons(data.get('buttons', []))
+    
+    # عرض الأزرار الحالية ليختار منها التاجر
+    keyboard = []
+    idx = 0
+    for row in buttons:
+        kb_row = []
+        for btn in row:
+            kb_row.append(InlineKeyboardButton(text=btn['text'], callback_data=f"edit_btn_idx_{idx}"))
+            idx += 1
+        keyboard.append(kb_row)
+    
+    keyboard.append([InlineKeyboardButton(text="🔙 رجوع", callback_data="back_to_preview")])
+    markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+    
+    # حذف المعاينة السابقة وعرض قائمة الاختيار
+    try: await callback.message.bot.delete_message(callback.message.chat.id, data.get('preview_msg_id'))
+    except: pass
+    
+    sent_msg = await callback.message.answer("اختر الزر الذي تود تعديله من القائمة أدناه:", reply_markup=markup)
+    await state.update_data(preview_msg_id=sent_msg.message_id)
+    await callback.answer()
+
+@router.callback_query(F.data == "back_to_preview")
+async def back_to_preview(callback: types.CallbackQuery, state: FSMContext):
+    await show_ad_preview(callback.message, state, edit_mode=True)
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("edit_btn_idx_"))
+async def ask_specific_btn_text(callback: types.CallbackQuery, state: FSMContext):
+    idx = int(callback.data.split("_")[-1])
+    await state.update_data(editing_btn_idx=idx)
+    
+    msg = await callback.message.answer("✏️ أرسل <b>الاسم الجديد</b> للزر:", parse_mode="HTML")
+    await state.update_data(prompt_msg_id=msg.message_id)
+    await state.set_state(AdForm.waiting_for_specific_btn_text)
+    await callback.answer()
+
+@router.message(AdForm.waiting_for_specific_btn_text, F.text)
+async def process_specific_btn_text(message: types.Message, state: FSMContext):
+    await state.update_data(current_btn_text=message.text)
+    data = await state.get_data()
+    
+    try: await message.bot.delete_message(message.chat.id, data.get('prompt_msg_id'))
+    except: pass
+    try: await message.delete()
+    except: pass
+
+    msg = await message.answer("🔗 ممتاز. أرسل الآن <b>الرابط الجديد</b> (https:// أو t.me/):", parse_mode="HTML")
+    await state.update_data(prompt_msg_id=msg.message_id)
+    await state.set_state(AdForm.waiting_for_specific_btn_url)
+
+@router.message(AdForm.waiting_for_specific_btn_url, F.text)
+async def process_specific_btn_url(message: types.Message, state: FSMContext):
+    url = message.text.strip()
+    data = await state.get_data()
+
+    try: await message.bot.delete_message(message.chat.id, data.get('prompt_msg_id'))
+    except: pass
+    try: await message.delete()
+    except: pass
+
+    if not url.startswith(('https://', 't.me/')):
+        msg = await message.answer("❌ الرابط غير صحيح. يجب أن يبدأ بـ <b>https://</b> أو <b>t.me/</b> حصراً.\nأرسل الرابط مجدداً:", parse_mode="HTML")
+        await state.update_data(prompt_msg_id=msg.message_id)
+        return
+
+    buttons = normalize_buttons(data.get('buttons', []))
+    idx_to_edit = data.get('editing_btn_idx')
+    
+    # البحث عن الزر واستبداله بناءً على الفهرس (Index)
+    current_idx = 0
+    old_btn = None
+    target_r = -1
+    target_c = -1
+    
+    for r_idx, row in enumerate(buttons):
+        for c_idx, btn in enumerate(row):
+            if current_idx == idx_to_edit:
+                old_btn = buttons[r_idx][c_idx]
+                target_r, target_c = r_idx, c_idx
+                buttons[r_idx][c_idx] = {'text': data['current_btn_text'], 'url': url}
+                break
+            current_idx += 1
+            
+        if old_btn: break
+
+    await state.update_data(buttons=buttons)
+
+    try:
+        await show_ad_preview(message, state, edit_mode=True)
+        await state.set_state(None)
+    except Exception as e:
+        if old_btn:
+            buttons[target_r][target_c] = old_btn
+            await state.update_data(buttons=buttons)
+        msg = await message.answer("❌ عذراً، تيليجرام يرفض هذا الرابط. يرجى إرسال رابط صالح:")
+        await state.update_data(prompt_msg_id=msg.message_id)
+
 @router.callback_query(F.data == "clear_btns")
 async def clear_btns(callback: types.CallbackQuery, state: FSMContext):
     await state.update_data(buttons=[])
@@ -236,7 +339,6 @@ async def finish_ad(callback: types.CallbackQuery, state: FSMContext):
         data = await state.get_data()
         merchant_id = get_merchant_id(str(callback.from_user.id))
         
-        # تحويل الأزرار إلى JSON String لحل مشكلة فايربيس
         buttons_data = normalize_buttons(data.get('buttons', []))
         buttons_json = json.dumps(buttons_data) 
         
@@ -248,7 +350,7 @@ async def finish_ad(callback: types.CallbackQuery, state: FSMContext):
             db.collection("ads").document(doc_id).update({
                 "description": data.get('description', ''),
                 "photo_id": data.get('photo_id'),
-                "buttons": buttons_json # حفظ كنص
+                "buttons": buttons_json 
             })
             short_id = db.collection("ads").document(doc_id).get().to_dict().get('ad_id')
             await callback.message.answer(f"✅ تم التحديث بنجاح! رقم الإعلان: <code>{short_id}</code>", parse_mode="HTML", reply_markup=get_main_menu())
@@ -261,7 +363,7 @@ async def finish_ad(callback: types.CallbackQuery, state: FSMContext):
                 "merchant_id": merchant_id,
                 "description": data.get('description', ''),
                 "photo_id": data.get('photo_id'),
-                "buttons": buttons_json # حفظ كنص
+                "buttons": buttons_json 
             })
             success_text = (
                 f"✅ <b>تم إنشاء إعلانك بنجاح!</b>\n\n"
