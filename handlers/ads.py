@@ -13,8 +13,8 @@ class AdForm(StatesGroup):
     waiting_for_edit_content = State()
     waiting_for_btn_text = State()
     waiting_for_btn_url = State()
-    waiting_for_specific_btn_text = State() # حالة جديدة لتعديل اسم زر موجود
-    waiting_for_specific_btn_url = State()  # حالة جديدة لتعديل رابط زر موجود
+    waiting_for_specific_btn_text = State()
+    waiting_for_specific_btn_url = State()
 
 # ================= الدوال المساعدة =================
 def normalize_buttons(buttons_data):
@@ -40,7 +40,8 @@ def normalize_buttons(buttons_data):
 def get_main_menu():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="➕ إنشاء إعلان جديد", callback_data="create_ad")],
-        [InlineKeyboardButton(text="📋 إعلاناتي", callback_data="list_ads")]
+        [InlineKeyboardButton(text="📋 إعلاناتي", callback_data="list_ads")],
+        [InlineKeyboardButton(text="ℹ️ شرح الاستخدام", callback_data="help_usage")]
     ])
 
 def get_ad_controls(doc_id: str):
@@ -105,6 +106,24 @@ async def show_ad_preview(message: types.Message, state: FSMContext, edit_mode=F
         sent_msg = await message.answer(text_preview, reply_markup=markup, parse_mode="HTML")
 
     await state.update_data(preview_msg_id=sent_msg.message_id)
+
+# ================= شرح الاستخدام (الجديد) =================
+@router.callback_query(F.data == "help_usage")
+async def show_help(callback: types.CallbackQuery):
+    help_text = (
+        "📚 <b>دليل استخدام نظام الإعلانات:</b>\n\n"
+        "1️⃣ <b>الإنشاء:</b> اضغط على (إنشاء إعلان جديد)، ثم أرسل صورة مع وصف، أو وصف نصي فقط للإعلان.\n"
+        "2️⃣ <b>إضافة الأزرار:</b> بعد إرسال المحتوى، ستظهر لك لوحة تحكم تتيح لك إضافة أزرار (روابط) وتوزيعها بشكل جميل (زر بجانب زر، أو في سطر جديد).\n"
+        "3️⃣ <b>النشر السريع (الإنلاين):</b> بعد الحفظ، ستحصل على (رقم الإعلان). للقيام بنشر إعلانك في أي محادثة أو جروب، اكتب يوزر البوت متبوعاً برقم الإعلان.\n"
+        "   <i>مثال توضيحي:</i> <code>@يوزر_البوت 1A2B3C</code>\n\n"
+        "4️⃣ <b>إدارة الإعلانات:</b> قسم (إعلاناتي) يتيح لك تعديل النصوص، الأزرار، أو حذف الإعلانات القديمة.\n\n"
+        "💡 <i>ملاحظة: الحد الأقصى لكل تاجر هو 5 إعلانات. لتغيير أو إضافة إعلان جديد يجب حذف إعلان قديم.</i>"
+    )
+    markup = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔙 رجوع", callback_data="start_menu")]
+    ])
+    await callback.message.edit_text(help_text, parse_mode="HTML", reply_markup=markup)
+    await callback.answer()
 
 # ================= إنشاء وتعديل المحتوى =================
 @router.callback_query(F.data == "create_ad")
@@ -229,7 +248,6 @@ async def select_btn_to_edit(callback: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
     buttons = normalize_buttons(data.get('buttons', []))
     
-    # عرض الأزرار الحالية ليختار منها التاجر
     keyboard = []
     idx = 0
     for row in buttons:
@@ -242,7 +260,6 @@ async def select_btn_to_edit(callback: types.CallbackQuery, state: FSMContext):
     keyboard.append([InlineKeyboardButton(text="🔙 رجوع", callback_data="back_to_preview")])
     markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
     
-    # حذف المعاينة السابقة وعرض قائمة الاختيار
     try: await callback.message.bot.delete_message(callback.message.chat.id, data.get('preview_msg_id'))
     except: pass
     
@@ -297,7 +314,6 @@ async def process_specific_btn_url(message: types.Message, state: FSMContext):
     buttons = normalize_buttons(data.get('buttons', []))
     idx_to_edit = data.get('editing_btn_idx')
     
-    # البحث عن الزر واستبداله بناءً على الفهرس (Index)
     current_idx = 0
     old_btn = None
     target_r = -1

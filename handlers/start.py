@@ -7,10 +7,10 @@ from database import db
 router = Router()
 
 def get_main_menu():
-    """لوحة المفاتيح الرئيسية"""
     keyboard = [
         [InlineKeyboardButton(text="➕ إنشاء إعلان", callback_data="create_ad")],
-        [InlineKeyboardButton(text="📋 عرض الإعلانات", callback_data="list_ads")]
+        [InlineKeyboardButton(text="📋 عرض الإعلانات", callback_data="list_ads")],
+        [InlineKeyboardButton(text="ℹ️ شرح الاستخدام", callback_data="help_usage")]
     ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
@@ -23,7 +23,6 @@ async def start_cmd(message: types.Message):
     if doc.exists:
         merchant_id = doc.to_dict().get("merchant_id")
     else:
-        # تسجيل جديد
         merchant_id = str(uuid.uuid4())[:8].upper()
         doc_ref.set({
             "merchant_id": merchant_id,
@@ -31,7 +30,6 @@ async def start_cmd(message: types.Message):
             "telegram_id": telegram_id
         })
 
-    # تجهيز النص الجميل
     text = (
         f"أهلاً بك يا <b>{message.from_user.full_name}</b> 🌟\n\n"
         f"👤 <b>الايدي الخاص بك:</b> <code>{telegram_id}</code>\n"
