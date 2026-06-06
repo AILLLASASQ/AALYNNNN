@@ -380,12 +380,18 @@ async def finish_ad(callback: types.CallbackQuery, state: FSMContext):
 
         if data.get('editing_doc_id'):
             doc_id = data['editing_doc_id']
-            db.collection("ads").document(doc_id).update({
+            
+            # التغيير هنا: استخدمنا set مع merge=True بدلاً من update لمنع خطأ 404
+            db.collection("ads").document(doc_id).set({
                 "description": data.get('description', ''),
                 "photo_id": data.get('photo_id'),
                 "buttons": buttons_json 
-            })
-            short_id = db.collection("ads").document(doc_id).get().to_dict().get('ad_id')
+            }, merge=True)
+            
+            # جلب البيانات بشكل آمن لتجنب أي أخطاء أخرى
+            doc_data = db.collection("ads").document(doc_id).get().to_dict()
+            short_id = doc_data.get('ad_id') if doc_data else doc_id[:6].upper()
+            
             await callback.message.answer(f"✅ تم التحديث بنجاح! رقم الإعلان: <code>{short_id}</code>", parse_mode="HTML", reply_markup=get_main_menu())
         else:
             ad_ref = db.collection("ads").document()
