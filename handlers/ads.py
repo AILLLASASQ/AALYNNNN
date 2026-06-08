@@ -42,7 +42,6 @@ def get_user_doc_ref_sync(telegram_id: str):
     return db.collection("merchants").document(telegram_id)
 
 def read_subscription_cache_sync(telegram_id: str) -> Optional[dict]:
-    """قراءة الكاش من Firestore بشكل متزامن (يُستدعى عبر asyncio.to_thread)"""
     doc = get_user_doc_ref_sync(telegram_id).get()
     if not doc.exists:
         return None
@@ -53,7 +52,6 @@ def read_subscription_cache_sync(telegram_id: str) -> Optional[dict]:
     }
 
 def write_subscription_cache_sync(telegram_id: str, is_subscribed: bool, checked_at_iso: str):
-    """كتابة الكاش في Firestore بشكل متزامن (يُستدعى عبر asyncio.to_thread)"""
     get_user_doc_ref_sync(telegram_id).set({
         "is_subscribed": is_subscribed,
         "sub_checked_at": checked_at_iso
@@ -61,14 +59,12 @@ def write_subscription_cache_sync(telegram_id: str, is_subscribed: bool, checked
 
 # ================= دوال مساعدة وترتيب =================
 def truncate_text(text, max_len=25):
-    """دالة القص البرمجي التلقائي للنصوص الطويلة لمنع تمدد الكيبورد"""
     if not text:
         return "زر"
     text = str(text)
     return text[:max_len] + "..." if len(text) > max_len else text
 
 def normalize_buttons(buttons_data):
-    """تحويل الأزرار واسترجاعها مع احترام الترتيب اليدوي للتاجر"""
     if not buttons_data:
         return []
     if isinstance(buttons_data, str):
@@ -80,7 +76,6 @@ def normalize_buttons(buttons_data):
         return []
     if isinstance(buttons_data[0], list):
         return buttons_data
-    # حماية للبيانات القديمة
     return [[b] for b in buttons_data]
 
 # ================= بناء واجهات الكيبورد =================
@@ -92,7 +87,6 @@ def get_main_menu():
     ])
 
 def build_ad_markup(buttons_list):
-    """الكيبورد النهائي عند النشر (للعملاء) مع القص التلقائي"""
     buttons_list = normalize_buttons(buttons_list)
     keyboard = []
     for row in buttons_list:
@@ -100,7 +94,6 @@ def build_ad_markup(buttons_list):
     return InlineKeyboardMarkup(inline_keyboard=keyboard) if keyboard else None
 
 def build_merged_keyboard(buttons_list, doc_id):
-    """كيبورد الإدارة للتاجر (مدمج وموفر للمساحة)"""
     buttons_list = normalize_buttons(buttons_list)
     keyboard = []
     for row in buttons_list:
@@ -118,7 +111,6 @@ def build_merged_keyboard(buttons_list, doc_id):
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 def build_preview_keyboard(buttons_list):
-    """كيبورد المعاينة والتحكم التفاعلي أثناء الإنشاء"""
     buttons_list = normalize_buttons(buttons_list)
     keyboard = []
     for row in buttons_list:
@@ -153,10 +145,6 @@ def get_subscribe_keyboard():
 
 # ================= دالة الحصول على merchant_id من Firestore =================
 async def get_merchant_id(telegram_id: str) -> Optional[str]:
-    """
-    ترجع قيمة merchant_id من مجموعة 'merchants' في Firestore
-    telegram_id يجب أن يكون نص (مثلاً str(user.id))
-    """
     try:
         doc_snapshot = await asyncio.to_thread(db.collection("merchants").document(telegram_id).get)
         if doc_snapshot.exists:
@@ -168,12 +156,7 @@ async def get_merchant_id(telegram_id: str) -> Optional[str]:
 
 # ================= فحص الاشتراك (يحاول استخدام الكاش ثم Telegram) =================
 async def is_user_subscribed(bot: types.Bot, user_id: int) -> bool:
-    """
-    يتحقق من الكاش في Firestore أولاً، وإذا كان قديمًا أو غير موجود يتصل بـ Telegram.
-    يخزن النتيجة في Firestore لتقليل عدد استدعاءات Telegram.
-    """
     try:
-        # قراءة الكاش بشكل متزامن عبر to_thread
         cache = await asyncio.to_thread(read_subscription_cache_sync, str(user_id))
         if cache and cache.get("is_subscribed") is not None and cache.get("sub_checked_at"):
             try:
@@ -181,18 +164,13 @@ async def is_user_subscribed(bot: types.Bot, user_id: int) -> bool:
                 if (datetime.utcnow() - checked_at) < timedelta(seconds=SUB_CHECK_TTL):
                     return bool(cache["is_subscribed"])
             except Exception:
-                # إذا فشل تحويل التاريخ نتابع للتحقق الحقيقي
                 pass
 
-        # تحقق حقيقي من Telegram
         member = await bot.get_chat_member(CHANNEL_USERNAME, user_id)
         is_sub = member.status in ("member", "administrator", "creator")
-
-        # خزّن النتيجة في الكاش (بشكل متزامن)
         await asyncio.to_thread(write_subscription_cache_sync, str(user_id), bool(is_sub), datetime.utcnow().isoformat())
         return bool(is_sub)
     except Exception:
-        # في حال أي خطأ نعيد False بشكل آمن
         return False
 
 # ================= معاينة الإعلان =================
@@ -388,6 +366,7 @@ async def process_btn_url(message: types.Message, state: FSMContext):
         msg = await message.answer("❌ عذراً، تيليجرام يرفض هذا الرابط. يرجى إرسال رابط صالح:")
         await state.update_data(prompt_msg_id=msg.message_id)
 
+# ================= تعديل زر معين مع إضافة زر مسح لكل زر =================
 @router.callback_query(F.data == "select_btn_to_edit")
 async def select_btn_to_edit(callback: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
@@ -398,7 +377,9 @@ async def select_btn_to_edit(callback: types.CallbackQuery, state: FSMContext):
     for row in buttons:
         kb_row = []
         for btn in row:
+            # لكل زر نعرض زرين: اسم الزر (للتعديل) وزر مسح
             kb_row.append(InlineKeyboardButton(text=truncate_text(btn['text']), callback_data=f"edit_btn_idx_{idx}"))
+            kb_row.append(InlineKeyboardButton(text="🗑️ مسح", callback_data=f"delete_btn_idx_{idx}"))
             idx += 1
         keyboard.append(kb_row)
 
@@ -410,7 +391,7 @@ async def select_btn_to_edit(callback: types.CallbackQuery, state: FSMContext):
     except TelegramBadRequest:
         pass
 
-    sent_msg = await callback.message.answer("اختر الزر الذي تود تعديله من القائمة أدناه:", reply_markup=markup)
+    sent_msg = await callback.message.answer("اختر الزر الذي تود تعديله أو حذفه:", reply_markup=markup)
     await state.update_data(preview_msg_id=sent_msg.message_id)
     await callback.answer()
 
@@ -428,6 +409,38 @@ async def ask_specific_btn_text(callback: types.CallbackQuery, state: FSMContext
     await state.update_data(prompt_msg_id=msg.message_id)
     await state.set_state(AdForm.waiting_for_specific_btn_text)
     await callback.answer()
+
+@router.callback_query(F.data.startswith("delete_btn_idx_"))
+async def delete_specific_btn(callback: types.CallbackQuery, state: FSMContext):
+    idx_to_delete = int(callback.data.split("_")[-1])
+    data = await state.get_data()
+    buttons = normalize_buttons(data.get('buttons', []))
+
+    current_idx = 0
+    removed = False
+    for r_idx, row in enumerate(buttons):
+        for c_idx in range(len(row)):
+            if current_idx == idx_to_delete:
+                # احذف الزر
+                buttons[r_idx].pop(c_idx)
+                # إذا أصبحت الصفوف فارغة، احذف الصف
+                if len(buttons[r_idx]) == 0:
+                    buttons.pop(r_idx)
+                removed = True
+                break
+            current_idx += 1
+        if removed:
+            break
+
+    if removed:
+        await state.update_data(buttons=buttons)
+        try:
+            await show_ad_preview(callback.message, state, edit_mode=True)
+        except Exception:
+            pass
+        await callback.answer("🗑️ تم حذف الزر")
+    else:
+        await callback.answer("❌ لم أتمكن من العثور على الزر.", show_alert=True)
 
 @router.message(AdForm.waiting_for_specific_btn_text, F.text)
 async def process_specific_btn_text(message: types.Message, state: FSMContext):
@@ -535,7 +548,6 @@ async def finish_ad(callback: types.CallbackQuery, state: FSMContext):
             await callback.message.answer(update_text, parse_mode="HTML", reply_markup=get_main_menu())
 
         else:
-            # تحقق نهائي من الحد والاشتراك
             subscribed = await is_user_subscribed(callback.bot, callback.from_user.id)
             ads = await asyncio.to_thread(fetch_ads_by_merchant, merchant_id) if merchant_id else []
             limit = PAID_LIMIT if subscribed else FREE_LIMIT
