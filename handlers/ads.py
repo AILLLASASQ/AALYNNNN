@@ -2,6 +2,11 @@ import json
 import asyncio
 from datetime import datetime, timedelta
 from typing import List, Optional
+import time
+
+# قاموس لتخزين وقت آخر ضغطة لكل مستخدم لمنع السبام
+check_sub_cooldowns = {}
+COOLDOWN_SECONDS = 10  # عدد ثواني الانتظار الإجبارية بين كل فحص وآخر
 
 from aiogram import Router, types, F
 from aiogram.fsm.context import FSMContext
@@ -154,23 +159,29 @@ async def get_merchant_id(telegram_id: str) -> Optional[str]:
     except Exception:
         return None
 
-# ================= فحص الاشتراك (يحاول استخدام الكاش ثم Telegram) =================
-async def is_user_subscribed(bot: types.Bot, user_id: int) -> bool:
+# ================= فحص الاشتراك (مع خيار إجبار التحديث) =================
+async def is_user_subscribed(bot: types.Bot, user_id: int, force_refresh: bool = False) -> bool:
     try:
-        cache = await asyncio.to_thread(read_subscription_cache_sync, str(user_id))
-        if cache and cache.get("is_subscribed") is not None and cache.get("sub_checked_at"):
-            try:
-                checked_at = datetime.fromisoformat(cache["sub_checked_at"])
-                if (datetime.utcnow() - checked_at) < timedelta(seconds=SUB_CHECK_TTL):
-                    return bool(cache["is_subscribed"])
-            except Exception:
-                pass
+        # إذا لم نطلب تحديثاً إجبارياً، ابحث في الكاش أولاً
+        if not force_refresh:
+            cache = await asyncio.to_thread(read_subscription_cache_sync, str(user_id))
+            if cache and cache.get("is_subscribed") is not None and cache.get("sub_checked_at"):
+                try:
+                    checked_at = datetime.fromisoformat(cache["sub_checked_at"])
+                    if (datetime.utcnow() - checked_at) < timedelta(seconds=SUB_CHECK_TTL):
+                        return bool(cache["is_subscribed"])
+                except Exception:
+                    pass
 
+        # جلب الحالة المباشرة من تيليجرام (يتم دائماً إذا كان force_refresh=True)
         member = await bot.get_chat_member(CHANNEL_USERNAME, user_id)
         is_sub = member.status in ("member", "administrator", "creator")
+        
+        # تحديث الكاش بالنتيجة الجديدة
         await asyncio.to_thread(write_subscription_cache_sync, str(user_id), bool(is_sub), datetime.utcnow().isoformat())
         return bool(is_sub)
-    except Exception:
+    except Exception as e:
+        print(f"Error checking sub: {e}")
         return False
 
 # ================= معاينة الإعلان =================
@@ -736,12 +747,31 @@ async def inline_ad_search(inline_query: InlineQuery):
 
     await inline_query.answer([result], cache_time=5)
 
-# ================= زر التحقق من الاشتراك =================
+# ================= زر التحقق من الاشتراك (مع حماية ضد السبام) =================
 @router.callback_query(F.data == "check_subscription")
 async def check_subscription(callback: types.CallbackQuery):
-    subscribed = await is_user_subscribed(callback.bot, callback.from_user.id)
+    user_id = callback.from_user.id
+    current_time = time.time()
+
+    # 1. نظام الحماية (Cooldown)
+    if user_id in check_sub_cooldowns:
+        time_passed = current_time - check_sub_cooldowns[user_id]
+        if time_passed < COOLDOWN_SECONDS:
+            remaining = int(COOLDOWN_SECONDS - time_passed)
+            await callback.answer(f"⏳ يرجى الانتظار {remaining} ثوانٍ قبل المحاولة مرة أخرى.", show_alert=True)
+            return  # نوقف العملية هنا تماماً، ولا نكلم سيرفر تيليجرام!
+
+    # تحديث وقت آخر محاولة لهذا المستخدم
+    check_sub_cooldowns[user_id] = current_time
+
+    # 2. فحص الاشتراك الفعلي (سيتم تنفيذه فقط إذا تجاوز الـ 10 ثوانٍ)
+    subscribed = await is_user_subscribed(callback.bot, user_id, force_refresh=True)
+    
     if subscribed:
+        # إذا اشترك، يمكننا مسح الـ cooldown الخاص به لتنظيف الذاكرة
+        check_sub_cooldowns.pop(user_id, None)
         try:
+            await callback.message.delete()
             await callback.message.answer(
                 "✅ تم التحقق من اشتراكك بنجاح!\nالآن يمكنك إنشاء حتى 10 إعلانات.",
                 reply_markup=get_main_menu()
@@ -750,10 +780,11 @@ async def check_subscription(callback: types.CallbackQuery):
             await callback.answer("✅ تم التحقق من اشتراكك بنجاح.", show_alert=True)
     else:
         try:
+            await callback.message.delete()
             await callback.message.answer(
-                "❌ لم يتم العثور على اشتراكك.\nيرجى الانضمام أولًا ثم الضغط على تحقق.",
+                "❌ <b>لم نتمكن من العثور على اشتراكك!</b>\n\nيرجى الانضمام للقناة أولاً ثم العودة والضغط على تحقق.",
+                parse_mode="HTML",
                 reply_markup=get_subscribe_keyboard()
             )
         except TelegramBadRequest:
-            await callback.answer("❌ لم يتم العثور على اشتراكك.", show_alert=True)
-    await callback.answer()
+            await callback.answer("❌ لم يتم العثور على اشتراكك. تأكد من الانضمام ثم حاول مجدداً.", show_alert=True)
