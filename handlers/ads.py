@@ -26,7 +26,7 @@ def search_ad_by_id(query):
     return list(db.collection("ads").where("ad_id", "==", query).limit(1).stream())
 
 # ================= الدوال المساعدة والترتيب =================
-def truncate_text(text, max_len=20):
+def truncate_text(text, max_len=25):
     """دالة القص البرمجي التلقائي للنصوص الطويلة لمنع تمدد الكيبورد"""
     if not text: return "زر"
     text = str(text)
@@ -94,7 +94,6 @@ def build_preview_keyboard(buttons_list):
     else:
         last_row_len = len(buttons_list[-1])
         controls = []
-        # هنا تم تحديد الحد الأقصى بـ 2 أزرار فقط لكل سطر
         if last_row_len < 2:
             controls.append(InlineKeyboardButton(text="➕ زر بجانبه", callback_data="add_btn_same"))
         controls.append(InlineKeyboardButton(text="⏬ زر بالأسفل", callback_data="add_btn_new"))
@@ -147,7 +146,7 @@ async def show_help(callback: types.CallbackQuery):
         "📚 <b>دليل الاستخدام:</b>\n\n"
         "1️⃣ <b>الإنشاء:</b> اضغط إنشاء، وأرسل المحتوى، ثم استخدم لوحة التحكم لإضافة وتوزيع الأزرار كما تشاء.\n"
         "2️⃣ <b>النشر:</b> بعد الحفظ، اكتب يوزر البوت ثم رقم الإعلان في أي محادثة لنشره.\n"
-        "   <i>مثال:</i> <code>@يوزر_البوت 1A2B3C</code>\n\n"
+        "   <i>مثال:</i> <code>@dddddddddh_bot 1A2B3C</code>\n\n"
         "💡 <i>الحد الأقصى 5 إعلانات. الحد الأقصى زرين في كل سطر.</i>"
     )
     markup = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 رجوع", callback_data="start_menu")]])
@@ -262,7 +261,6 @@ async def process_btn_url(message: types.Message, state: FSMContext):
     if start_new_row or not buttons:
         buttons.append([new_btn])
     else:
-        # حماية إضافية للحد الأقصى
         if len(buttons[-1]) < 2:
             buttons[-1].append(new_btn)
         else:
@@ -274,7 +272,6 @@ async def process_btn_url(message: types.Message, state: FSMContext):
         await show_ad_preview(message, state, edit_mode=True)
         await state.set_state(None)
     except Exception:
-        # التراجع إذا رفض تيليجرام الرابط
         if start_new_row or len(buttons[-1]) == 1:
             buttons.pop()
         else:
@@ -410,7 +407,6 @@ async def finish_ad(callback: types.CallbackQuery, state: FSMContext):
             await asyncio.to_thread(db.collection("ads").document(doc_id).set, update_data, merge=True)
             short_id = data.get('ad_id') or doc_id[:6].upper()
             
-            # === التعديل هنا لرسالة التحديث ===
             update_text = (
                 f"✅ <b>تم التحديث بنجاح!</b>\n\n"
                 f"👇 اضغط لنسخ كود النشر السريع ثم الصقه في أي محادثة:\n"
@@ -431,7 +427,6 @@ async def finish_ad(callback: types.CallbackQuery, state: FSMContext):
             }
             await asyncio.to_thread(ad_ref.set, new_data)
 
-            # === التعديل هنا لرسالة الإنشاء الجديد ===
             success_text = (
                 f"✅ <b>تم إنشاء إعلانك بنجاح!</b>\n\n"
                 f"👇 اضغط على النص بالأسفل لنسخه، ثم الصقه في أي محادثة لنشر إعلانك:\n"
@@ -503,11 +498,25 @@ async def view_ad_details(callback: types.CallbackQuery):
         
     await callback.answer()
 
+# ================= التعديل البرمجي لزر الرجوع الترحيبي =================
 @router.callback_query(F.data == "start_menu")
 async def return_to_start(callback: types.CallbackQuery):
     await callback.answer()
-    try: await callback.message.edit_text("اختر ما تود القيام به:", reply_markup=get_main_menu())
-    except TelegramBadRequest: pass
+    
+    # سحب معلومات المستخدم لإظهار رد مطابق للـ start
+    user_name = callback.from_user.first_name
+    user_id = callback.from_user.id
+    
+    welcome_text = (
+        f"👋 <b>أهلاً بعودتك يا {user_name}</b>\n\n"
+        f"🆔 <b>الآيدي:</b> <code>{user_id}</code>\n\n"
+        f"🎛️ اختر ما تود القيام به من الأزرار أدناه:"
+    )
+    
+    try: 
+        await callback.message.edit_text(welcome_text, parse_mode="HTML", reply_markup=get_main_menu())
+    except TelegramBadRequest: 
+        pass
     
 @router.callback_query(F.data.startswith("delete_ad_"))
 async def delete_ad(callback: types.CallbackQuery):
