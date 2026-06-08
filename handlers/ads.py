@@ -410,7 +410,14 @@ async def finish_ad(callback: types.CallbackQuery, state: FSMContext):
             await asyncio.to_thread(db.collection("ads").document(doc_id).set, update_data, merge=True)
             short_id = data.get('ad_id') or doc_id[:6].upper()
             
-            await callback.message.answer(f"✅ تم التحديث بنجاح! رقم الإعلان: <code>{short_id}</code>", parse_mode="HTML", reply_markup=get_main_menu())
+            # === التعديل هنا لرسالة التحديث ===
+            update_text = (
+                f"✅ <b>تم التحديث بنجاح!</b>\n\n"
+                f"👇 اضغط لنسخ كود النشر السريع ثم الصقه في أي محادثة:\n"
+                f"<code>@dddddddddh_bot {short_id}</code>"
+            )
+            await callback.message.answer(update_text, parse_mode="HTML", reply_markup=get_main_menu())
+            
         else:
             ad_ref = db.collection("ads").document()
             short_id = ad_ref.id[:6].upper()
@@ -424,10 +431,11 @@ async def finish_ad(callback: types.CallbackQuery, state: FSMContext):
             }
             await asyncio.to_thread(ad_ref.set, new_data)
 
+            # === التعديل هنا لرسالة الإنشاء الجديد ===
             success_text = (
                 f"✅ <b>تم إنشاء إعلانك بنجاح!</b>\n\n"
-                f"🆔 <b>رقم الإعلان:</b> <code>{short_id}</code>\n\n"
-                f"اذهب لأي محادثة واكتب يوزر البوت ثم رقم إعلانك لنشره."
+                f"👇 اضغط على النص بالأسفل لنسخه، ثم الصقه في أي محادثة لنشر إعلانك:\n"
+                f"<code>@dddddddddh_bot {short_id}</code>"
             )
             await callback.message.answer(success_text, parse_mode="HTML", reply_markup=get_main_menu())
             
