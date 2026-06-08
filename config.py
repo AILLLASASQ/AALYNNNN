@@ -1,18 +1,18 @@
 import os
-import json
 from dotenv import load_dotenv
 
 load_dotenv()
 
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
-# في Render سنقوم بنسخ محتوى ملف جيسون ولصقه في هذا المتغير
-FIREBASE_CREDENTIALS_JSON = os.environ.get("FIREBASE_CREDENTIALS_JSON")
+# Bot and Firebase
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-if FIREBASE_CREDENTIALS_JSON:
-    try:
-        FIREBASE_CERT = json.loads(FIREBASE_CREDENTIALS_JSON)
-    except json.JSONDecodeError:
-        FIREBASE_CERT = None
-else:
-    # للتشغيل المحلي، ضع ملف المفتاح بجانب هذا الملف
-    FIREBASE_CERT = "firebase_cert.json"
+# In Render: set FIREBASE_CREDENTIALS_JSON to the JSON string of the service account key
+FIREBASE_CREDENTIALS_JSON = os.getenv("FIREBASE_CREDENTIALS_JSON")
+
+# Channel and limits
+CHANNEL_USERNAME = os.getenv("CHANNEL_USERNAME", "@YourChannel")  # ضع اسم قناتك هنا مع @
+FREE_LIMIT = int(os.getenv("FREE_LIMIT", 2))
+PAID_LIMIT = int(os.getenv("PAID_LIMIT", 10))
+
+# Optional: cache TTL for subscription checks (seconds)
+SUB_CHECK_TTL = int(os.getenv("SUB_CHECK_TTL", 60 * 60 * 24))  # 24 ساعة افتراضياً

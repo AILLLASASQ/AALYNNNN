@@ -1,5 +1,8 @@
 import json
 import asyncio
+from datetime import datetime, timedelta
+from typing import List, Optional
+
 from aiogram import Router, types, F
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -12,30 +15,11 @@ from aiogram.types import (
     InlineQueryResultCachedPhoto,
 )
 from aiogram.exceptions import TelegramBadRequest
+
+from config import CHANNEL_USERNAME, FREE_LIMIT, PAID_LIMIT, SUB_CHECK_TTL
 from database import db
 
 router = Router()
-
-# ================= إعداد الاشتراك الإجباري وقيود الإعلانات =================
-CHANNEL_USERNAME = "@YourChannel"  # ضع هنا اسم قناتك مع @
-FREE_LIMIT = 2
-PAID_LIMIT = 10
-
-async def is_user_subscribed(bot: types.Bot, user_id: int) -> bool:
-    """تحقق ما إذا كان المستخدم مشتركًا في القناة"""
-    try:
-        member = await bot.get_chat_member(CHANNEL_USERNAME, user_id)
-        return member.status in ("member", "administrator", "creator")
-    except Exception:
-        return False
-
-def get_subscribe_keyboard():
-    """كيبورد يوجه المستخدم للاشتراك ويحتوي زر تحقق"""
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📢 اشترك في القناة", url=f"https://t.me/{CHANNEL_USERNAME[1:]}")],
-        [InlineKeyboardButton(text="✅ تحقق من الاشتراك", callback_data="check_subscription")],
-        [InlineKeyboardButton(text="🔙 رجوع", callback_data="start_menu")]
-    ])
 
 # ================= حالات البوت (FSM) =================
 class AdForm(StatesGroup):
@@ -47,13 +31,35 @@ class AdForm(StatesGroup):
     waiting_for_specific_btn_url = State()
 
 # ================= دوال قاعدة البيانات (مساعدة للتزامن) =================
-def fetch_ads_by_merchant(merchant_id):
+def fetch_ads_by_merchant(merchant_id: str) -> List:
     return list(db.collection("ads").where("merchant_id", "==", merchant_id).stream())
 
-def search_ad_by_id(query):
+def search_ad_by_id(query: str) -> List:
     return list(db.collection("ads").where("ad_id", "==", query).limit(1).stream())
 
-# ================= الدوال المساعدة والترتيب =================
+# ================= دوال مساعدة للاشتراك (تخزين مؤقت في Firestore) =================
+def get_user_doc_ref_sync(telegram_id: str):
+    return db.collection("merchants").document(telegram_id)
+
+def read_subscription_cache_sync(telegram_id: str) -> Optional[dict]:
+    """قراءة الكاش من Firestore بشكل متزامن (يُستدعى عبر asyncio.to_thread)"""
+    doc = get_user_doc_ref_sync(telegram_id).get()
+    if not doc.exists:
+        return None
+    data = doc.to_dict()
+    return {
+        "is_subscribed": data.get("is_subscribed"),
+        "sub_checked_at": data.get("sub_checked_at")
+    }
+
+def write_subscription_cache_sync(telegram_id: str, is_subscribed: bool, checked_at_iso: str):
+    """كتابة الكاش في Firestore بشكل متزامن (يُستدعى عبر asyncio.to_thread)"""
+    get_user_doc_ref_sync(telegram_id).set({
+        "is_subscribed": is_subscribed,
+        "sub_checked_at": checked_at_iso
+    }, merge=True)
+
+# ================= دوال مساعدة وترتيب =================
 def truncate_text(text, max_len=25):
     """دالة القص البرمجي التلقائي للنصوص الطويلة لمنع تمدد الكيبورد"""
     if not text:
@@ -68,14 +74,12 @@ def normalize_buttons(buttons_data):
     if isinstance(buttons_data, str):
         try:
             buttons_data = json.loads(buttons_data)
-        except:
+        except Exception:
             return []
-
     if not buttons_data:
         return []
     if isinstance(buttons_data[0], list):
         return buttons_data
-
     # حماية للبيانات القديمة
     return [[b] for b in buttons_data]
 
@@ -99,12 +103,10 @@ def build_merged_keyboard(buttons_list, doc_id):
     """كيبورد الإدارة للتاجر (مدمج وموفر للمساحة)"""
     buttons_list = normalize_buttons(buttons_list)
     keyboard = []
-
     for row in buttons_list:
         keyboard.append([InlineKeyboardButton(text=truncate_text(btn['text']), url=btn['url']) for btn in row])
 
     keyboard.append([InlineKeyboardButton(text="--- أدوات الإدارة ---", callback_data="ignore_btn")])
-
     keyboard.append([
         InlineKeyboardButton(text="✏️ المحتوى", callback_data=f"edit_content_{doc_id}"),
         InlineKeyboardButton(text="🔘 الأزرار", callback_data=f"edit_buttons_{doc_id}")
@@ -119,7 +121,6 @@ def build_preview_keyboard(buttons_list):
     """كيبورد المعاينة والتحكم التفاعلي أثناء الإنشاء"""
     buttons_list = normalize_buttons(buttons_list)
     keyboard = []
-
     for row in buttons_list:
         keyboard.append([InlineKeyboardButton(text=truncate_text(btn['text']), url=btn['url']) for btn in row])
 
@@ -140,13 +141,59 @@ def build_preview_keyboard(buttons_list):
         ])
 
     keyboard.append([InlineKeyboardButton(text="✅ إنهاء وحفظ", callback_data="finish_ad")])
-
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
-# ================= دوال مساعدة Firestore =================
-async def get_merchant_id(telegram_id: str):
-    doc = await asyncio.to_thread(db.collection("merchants").document(telegram_id).get)
-    return doc.to_dict().get("merchant_id") if doc.exists else None
+# ================= كيبورد الاشتراك والتحقق =================
+def get_subscribe_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📢 اشترك في القناة", url=f"https://t.me/{CHANNEL_USERNAME.lstrip('@')}")],
+        [InlineKeyboardButton(text="✅ تحقق من الاشتراك", callback_data="check_subscription")],
+        [InlineKeyboardButton(text="🔙 رجوع", callback_data="start_menu")]
+    ])
+
+# ================= دالة الحصول على merchant_id من Firestore =================
+async def get_merchant_id(telegram_id: str) -> Optional[str]:
+    """
+    ترجع قيمة merchant_id من مجموعة 'merchants' في Firestore
+    telegram_id يجب أن يكون نص (مثلاً str(user.id))
+    """
+    try:
+        doc_snapshot = await asyncio.to_thread(db.collection("merchants").document(telegram_id).get)
+        if doc_snapshot.exists:
+            data = doc_snapshot.to_dict()
+            return data.get("merchant_id")
+        return None
+    except Exception:
+        return None
+
+# ================= فحص الاشتراك (يحاول استخدام الكاش ثم Telegram) =================
+async def is_user_subscribed(bot: types.Bot, user_id: int) -> bool:
+    """
+    يتحقق من الكاش في Firestore أولاً، وإذا كان قديمًا أو غير موجود يتصل بـ Telegram.
+    يخزن النتيجة في Firestore لتقليل عدد استدعاءات Telegram.
+    """
+    try:
+        # قراءة الكاش بشكل متزامن عبر to_thread
+        cache = await asyncio.to_thread(read_subscription_cache_sync, str(user_id))
+        if cache and cache.get("is_subscribed") is not None and cache.get("sub_checked_at"):
+            try:
+                checked_at = datetime.fromisoformat(cache["sub_checked_at"])
+                if (datetime.utcnow() - checked_at) < timedelta(seconds=SUB_CHECK_TTL):
+                    return bool(cache["is_subscribed"])
+            except Exception:
+                # إذا فشل تحويل التاريخ نتابع للتحقق الحقيقي
+                pass
+
+        # تحقق حقيقي من Telegram
+        member = await bot.get_chat_member(CHANNEL_USERNAME, user_id)
+        is_sub = member.status in ("member", "administrator", "creator")
+
+        # خزّن النتيجة في الكاش (بشكل متزامن)
+        await asyncio.to_thread(write_subscription_cache_sync, str(user_id), bool(is_sub), datetime.utcnow().isoformat())
+        return bool(is_sub)
+    except Exception:
+        # في حال أي خطأ نعيد False بشكل آمن
+        return False
 
 # ================= معاينة الإعلان =================
 async def show_ad_preview(message: types.Message, state: FSMContext, edit_mode=False):
@@ -171,7 +218,7 @@ async def show_ad_preview(message: types.Message, state: FSMContext, edit_mode=F
 
     await state.update_data(preview_msg_id=sent_msg.message_id)
 
-# ================= التفاعل مع الزر الوهمي وشرح الاستخدام =================
+# ================= التفاعل مع الأزرار والشرح =================
 @router.callback_query(F.data == "ignore_btn")
 async def ignore_btn_click(callback: types.CallbackQuery):
     await callback.answer("زر فاصِل ⚙️")
@@ -180,10 +227,9 @@ async def ignore_btn_click(callback: types.CallbackQuery):
 async def show_help(callback: types.CallbackQuery):
     help_text = (
         "📚 <b>دليل الاستخدام:</b>\n\n"
-        "1️⃣ <b>الإنشاء:</b> اضغط إنشاء، وأرسل المحتوى، ثم استخدم لوحة التحكم لإضافة وتوزيع الأزرار كما تشاء.\n"
-        "2️⃣ <b>النشر:</b> بعد الحفظ، اكتب يوزر البوت ثم رقم الإعلان في أي محادثة لنشره.\n"
-        "   <i>مثال:</i> <code>@dddddddddh_bot 1A2B3C</code>\n\n"
-        f"💡 <i>المستخدمون غير المشتركين يحصلون على {FREE_LIMIT} إعلان فقط. المشتركون يحصلون على {PAID_LIMIT} إعلان.</i>"
+        "1️⃣ اضغط إنشاء، وأرسل المحتوى، ثم استخدم لوحة التحكم لإضافة الأزرار.\n"
+        "2️⃣ بعد الحفظ، انسخ كود النشر والصقه في أي محادثة.\n\n"
+        f"💡 المستخدمون غير المشتركين يحصلون على {FREE_LIMIT} إعلان. المشتركون يحصلون على {PAID_LIMIT} إعلان."
     )
     markup = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 رجوع", callback_data="start_menu")]])
     try:
@@ -192,19 +238,17 @@ async def show_help(callback: types.CallbackQuery):
         await callback.message.answer(help_text, parse_mode="HTML", reply_markup=markup)
     await callback.answer()
 
-# ================= إنشاء وتعديل المحتوى (النظام التفاعلي) =================
+# ================= إنشاء إعلان جديد مع التحقق من الحد والاشتراك =================
 @router.callback_query(F.data == "create_ad")
 async def start_creating_ad(callback: types.CallbackQuery, state: FSMContext):
     merchant_id = await get_merchant_id(str(callback.from_user.id))
-    ads = await asyncio.to_thread(fetch_ads_by_merchant, merchant_id)
+    ads = await asyncio.to_thread(fetch_ads_by_merchant, merchant_id) if merchant_id else []
 
-    # تحقق من الاشتراك وحدود الإعلانات
     subscribed = await is_user_subscribed(callback.bot, callback.from_user.id)
     limit = PAID_LIMIT if subscribed else FREE_LIMIT
 
     if len(ads) >= limit:
         if not subscribed:
-            # رسالة تشجع على الاشتراك مع زر تحقق
             try:
                 await callback.message.answer(
                     f"❌ وصلت للحد الأقصى ({FREE_LIMIT}) من الإعلانات المجانية.\n\n📢 اشترك في القناة لتحصل على {PAID_LIMIT} إعلانات كاملة:",
@@ -231,6 +275,7 @@ async def process_content(message: types.Message, state: FSMContext):
     await show_ad_preview(message, state)
     await state.set_state(None)
 
+# ================= تحرير المحتوى والأزرار =================
 @router.callback_query(F.data.startswith("edit_content_"))
 async def edit_content_prompt(callback: types.CallbackQuery, state: FSMContext):
     doc_id = callback.data.split("edit_content_")[1]
@@ -270,7 +315,6 @@ async def edit_buttons_prompt(callback: types.CallbackQuery, state: FSMContext):
     await show_ad_preview(callback.message, state)
     await callback.answer()
 
-# ================= إضافة الأزرار يدوياً =================
 @router.callback_query(F.data.startswith("add_btn_"))
 async def prompt_btn_text(callback: types.CallbackQuery, state: FSMContext):
     is_new_row = (callback.data == "add_btn_new")
@@ -344,7 +388,6 @@ async def process_btn_url(message: types.Message, state: FSMContext):
         msg = await message.answer("❌ عذراً، تيليجرام يرفض هذا الرابط. يرجى إرسال رابط صالح:")
         await state.update_data(prompt_msg_id=msg.message_id)
 
-# ================= تعديل زر معين =================
 @router.callback_query(F.data == "select_btn_to_edit")
 async def select_btn_to_edit(callback: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
@@ -492,9 +535,9 @@ async def finish_ad(callback: types.CallbackQuery, state: FSMContext):
             await callback.message.answer(update_text, parse_mode="HTML", reply_markup=get_main_menu())
 
         else:
-            # قبل الحفظ، تحقق من الحد والاشتراك مرة أخرى لتجنب تجاوز الحد عبر حالات متزامنة
+            # تحقق نهائي من الحد والاشتراك
             subscribed = await is_user_subscribed(callback.bot, callback.from_user.id)
-            ads = await asyncio.to_thread(fetch_ads_by_merchant, merchant_id)
+            ads = await asyncio.to_thread(fetch_ads_by_merchant, merchant_id) if merchant_id else []
             limit = PAID_LIMIT if subscribed else FREE_LIMIT
             if len(ads) >= limit:
                 if not subscribed:
@@ -564,12 +607,9 @@ async def list_my_ads(callback: types.CallbackQuery):
         short_desc = str(desc)[:15].replace("\n", " ") + "..."
         keyboard.append([InlineKeyboardButton(text=f"📢 {short_desc} ({ad_data['ad_id']})", callback_data=f"view_ad_{ad_data['doc_id']}")])
 
-    # إضافة زر اشتراك إذا وصل المستخدم للحد المجاني ولم يشترك
     subscribed = await is_user_subscribed(callback.bot, callback.from_user.id)
-    if not subscribed:
-        # إذا كان عدد الإعلانات >= FREE_LIMIT نعرض زر الاشتراك أعلى القائمة
-        if len(ads) >= FREE_LIMIT:
-            keyboard.insert(0, [InlineKeyboardButton(text=f"🔒 اشترك لرفع الحد إلى {PAID_LIMIT}", callback_data="show_subscribe_prompt")])
+    if not subscribed and len(ads) >= FREE_LIMIT:
+        keyboard.insert(0, [InlineKeyboardButton(text=f"🔒 اشترك لرفع الحد إلى {PAID_LIMIT}", callback_data="show_subscribe_prompt")])
 
     keyboard.append([InlineKeyboardButton(text="🔙 رجوع", callback_data="start_menu")])
     markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
