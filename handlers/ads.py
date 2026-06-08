@@ -453,8 +453,13 @@ async def list_my_ads(callback: types.CallbackQuery):
     ads = await asyncio.to_thread(fetch_ads_by_merchant, merchant_id)
     
     if not ads:
-        try: await callback.message.edit_text("ليس لديك إعلانات حالياً.", reply_markup=get_main_menu())
-        except TelegramBadRequest: pass
+        try: 
+            await callback.message.edit_text("ليس لديك إعلانات حالياً.", reply_markup=get_main_menu())
+        except TelegramBadRequest: 
+            # إذا فشل التعديل (لأن الرسالة السابقة صورة)، نقوم بالحذف وإرسال جديد
+            try: await callback.message.delete()
+            except TelegramBadRequest: pass
+            await callback.message.answer("ليس لديك إعلانات حالياً.", reply_markup=get_main_menu())
         return
 
     keyboard = []
@@ -470,7 +475,13 @@ async def list_my_ads(callback: types.CallbackQuery):
     keyboard.append([InlineKeyboardButton(text="🔙 رجوع", callback_data="start_menu")])
     markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
     
-    try: await callback.message.edit_text("📋 <b>قائمة إعلاناتك:</b>", parse_mode="HTML", reply_markup=markup)
+    try: 
+        await callback.message.edit_text("📋 <b>قائمة إعلاناتك:</b>", parse_mode="HTML", reply_markup=markup)
+    except TelegramBadRequest: 
+        # المعالجة الذكية: إذا كانت الرسالة الحالية صورة، احذفها وأرسل القائمة من جديد
+        try: await callback.message.delete()
+        except TelegramBadRequest: pass
+        await callback.message.answer("📋 <b>قائمة إعلاناتك:</b>", parse_mode="HTML", reply_markup=markup)
     except TelegramBadRequest: pass
 
 @router.callback_query(F.data.startswith("view_ad_"))
