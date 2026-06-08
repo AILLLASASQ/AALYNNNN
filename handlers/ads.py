@@ -1,12 +1,8 @@
 import json
 import asyncio
+import time
 from datetime import datetime, timedelta
 from typing import List, Optional
-import time
-
-# قاموس لتخزين وقت آخر ضغطة لكل مستخدم لمنع السبام
-check_sub_cooldowns = {}
-COOLDOWN_SECONDS = 10  # عدد ثواني الانتظار الإجبارية بين كل فحص وآخر
 
 from aiogram import Router, types, F
 from aiogram.fsm.context import FSMContext
@@ -26,6 +22,10 @@ from database import db
 
 router = Router()
 
+# ================= نظام الحماية ضد السبام =================
+check_sub_cooldowns = {}
+COOLDOWN_SECONDS = 10  # عدد ثواني الانتظار بين كل ضغطة تحقق
+
 # ================= حالات البوت (FSM) =================
 class AdForm(StatesGroup):
     waiting_for_content = State()
@@ -42,7 +42,7 @@ def fetch_ads_by_merchant(merchant_id: str) -> List:
 def search_ad_by_id(query: str) -> List:
     return list(db.collection("ads").where("ad_id", "==", query).limit(1).stream())
 
-# ================= دوال مساعدة للاشتراك (تخزين مؤقت في Firestore) =================
+# ================= دوال التخزين المؤقت للاشتراك (Firestore) =================
 def get_user_doc_ref_sync(telegram_id: str):
     return db.collection("merchants").document(telegram_id)
 
@@ -62,25 +62,41 @@ def write_subscription_cache_sync(telegram_id: str, is_subscribed: bool, checked
         "sub_checked_at": checked_at_iso
     }, merge=True)
 
-# ================= دوال مساعدة وترتيب =================
+# ================= فحص الاشتراك (مع خيار تجاوز الكاش) =================
+async def is_user_subscribed(bot: types.Bot, user_id: int, force_refresh: bool = False) -> bool:
+    try:
+        if not force_refresh:
+            cache = await asyncio.to_thread(read_subscription_cache_sync, str(user_id))
+            if cache and cache.get("is_subscribed") is not None and cache.get("sub_checked_at"):
+                try:
+                    checked_at = datetime.fromisoformat(cache["sub_checked_at"])
+                    if (datetime.utcnow() - checked_at) < timedelta(seconds=SUB_CHECK_TTL):
+                        return bool(cache["is_subscribed"])
+                except Exception:
+                    pass
+
+        member = await bot.get_chat_member(CHANNEL_USERNAME, user_id)
+        is_sub = member.status in ("member", "administrator", "creator")
+        
+        await asyncio.to_thread(write_subscription_cache_sync, str(user_id), bool(is_sub), datetime.utcnow().isoformat())
+        return bool(is_sub)
+    except Exception as e:
+        print(f"Error checking sub: {e}")
+        return False
+
+# ================= الدوال المساعدة والترتيب =================
 def truncate_text(text, max_len=25):
-    if not text:
-        return "زر"
+    if not text: return "زر"
     text = str(text)
     return text[:max_len] + "..." if len(text) > max_len else text
 
 def normalize_buttons(buttons_data):
-    if not buttons_data:
-        return []
+    if not buttons_data: return []
     if isinstance(buttons_data, str):
-        try:
-            buttons_data = json.loads(buttons_data)
-        except Exception:
-            return []
-    if not buttons_data:
-        return []
-    if isinstance(buttons_data[0], list):
-        return buttons_data
+        try: buttons_data = json.loads(buttons_data)
+        except Exception: return []
+    if not buttons_data: return []
+    if isinstance(buttons_data[0], list): return buttons_data
     return [[b] for b in buttons_data]
 
 # ================= بناء واجهات الكيبورد =================
@@ -140,7 +156,6 @@ def build_preview_keyboard(buttons_list):
     keyboard.append([InlineKeyboardButton(text="✅ إنهاء وحفظ", callback_data="finish_ad")])
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
-# ================= كيبورد الاشتراك والتحقق =================
 def get_subscribe_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📢 اشترك في القناة", url=f"https://t.me/{CHANNEL_USERNAME.lstrip('@')}")],
@@ -148,41 +163,14 @@ def get_subscribe_keyboard():
         [InlineKeyboardButton(text="🔙 رجوع", callback_data="start_menu")]
     ])
 
-# ================= دالة الحصول على merchant_id من Firestore =================
 async def get_merchant_id(telegram_id: str) -> Optional[str]:
     try:
         doc_snapshot = await asyncio.to_thread(db.collection("merchants").document(telegram_id).get)
         if doc_snapshot.exists:
-            data = doc_snapshot.to_dict()
-            return data.get("merchant_id")
+            return doc_snapshot.to_dict().get("merchant_id")
         return None
     except Exception:
         return None
-
-# ================= فحص الاشتراك (مع خيار إجبار التحديث) =================
-async def is_user_subscribed(bot: types.Bot, user_id: int, force_refresh: bool = False) -> bool:
-    try:
-        # إذا لم نطلب تحديثاً إجبارياً، ابحث في الكاش أولاً
-        if not force_refresh:
-            cache = await asyncio.to_thread(read_subscription_cache_sync, str(user_id))
-            if cache and cache.get("is_subscribed") is not None and cache.get("sub_checked_at"):
-                try:
-                    checked_at = datetime.fromisoformat(cache["sub_checked_at"])
-                    if (datetime.utcnow() - checked_at) < timedelta(seconds=SUB_CHECK_TTL):
-                        return bool(cache["is_subscribed"])
-                except Exception:
-                    pass
-
-        # جلب الحالة المباشرة من تيليجرام (يتم دائماً إذا كان force_refresh=True)
-        member = await bot.get_chat_member(CHANNEL_USERNAME, user_id)
-        is_sub = member.status in ("member", "administrator", "creator")
-        
-        # تحديث الكاش بالنتيجة الجديدة
-        await asyncio.to_thread(write_subscription_cache_sync, str(user_id), bool(is_sub), datetime.utcnow().isoformat())
-        return bool(is_sub)
-    except Exception as e:
-        print(f"Error checking sub: {e}")
-        return False
 
 # ================= معاينة الإعلان =================
 async def show_ad_preview(message: types.Message, state: FSMContext, edit_mode=False):
@@ -195,10 +183,8 @@ async def show_ad_preview(message: types.Message, state: FSMContext, edit_mode=F
     text_preview = f"👀 <b>معاينة الإعلان:</b>\n\n{desc}" if desc else "👀 <b>معاينة الإعلان:</b>\nبدون نص"
 
     if edit_mode and data.get('preview_msg_id'):
-        try:
-            await message.bot.delete_message(message.chat.id, data['preview_msg_id'])
-        except TelegramBadRequest:
-            pass
+        try: await message.bot.delete_message(message.chat.id, data['preview_msg_id'])
+        except TelegramBadRequest: pass
 
     if photo_id:
         sent_msg = await message.answer_photo(photo=photo_id, caption=text_preview, reply_markup=markup, parse_mode="HTML")
@@ -207,7 +193,7 @@ async def show_ad_preview(message: types.Message, state: FSMContext, edit_mode=F
 
     await state.update_data(preview_msg_id=sent_msg.message_id)
 
-# ================= التفاعل مع الأزرار والشرح =================
+# ================= التفاعل العام =================
 @router.callback_query(F.data == "ignore_btn")
 async def ignore_btn_click(callback: types.CallbackQuery):
     await callback.answer("زر فاصِل ⚙️")
@@ -218,41 +204,40 @@ async def show_help(callback: types.CallbackQuery):
         "📚 <b>دليل الاستخدام:</b>\n\n"
         "1️⃣ اضغط إنشاء، وأرسل المحتوى، ثم استخدم لوحة التحكم لإضافة الأزرار.\n"
         "2️⃣ بعد الحفظ، انسخ كود النشر والصقه في أي محادثة.\n\n"
-        f"💡 المستخدمون غير المشتركين يحصلون على {FREE_LIMIT} إعلان. المشتركون يحصلون على {PAID_LIMIT} إعلان."
+        f"💡 المستخدمون غير المشتركين يحصلون على {FREE_LIMIT} إعلان.\nالمشتركون يحصلون على {PAID_LIMIT} إعلان."
     )
     markup = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 رجوع", callback_data="start_menu")]])
-    try:
-        await callback.message.edit_text(help_text, parse_mode="HTML", reply_markup=markup)
-    except TelegramBadRequest:
-        await callback.message.answer(help_text, parse_mode="HTML", reply_markup=markup)
+    try: await callback.message.edit_text(help_text, parse_mode="HTML", reply_markup=markup)
+    except TelegramBadRequest: await callback.message.answer(help_text, parse_mode="HTML", reply_markup=markup)
     await callback.answer()
 
-# ================= إنشاء إعلان جديد مع التحقق من الحد والاشتراك =================
+# ================= إنشاء إعلان جديد =================
 @router.callback_query(F.data == "create_ad")
 async def start_creating_ad(callback: types.CallbackQuery, state: FSMContext):
     merchant_id = await get_merchant_id(str(callback.from_user.id))
-    ads = await asyncio.to_thread(fetch_ads_by_merchant, merchant_id) if merchant_id else []
+    
+    if not merchant_id:
+        await callback.answer("❌ يرجى الضغط على /start لتسجيل حسابك وتحديث بياناتك أولاً.", show_alert=True)
+        return
 
+    ads = await asyncio.to_thread(fetch_ads_by_merchant, merchant_id)
     subscribed = await is_user_subscribed(callback.bot, callback.from_user.id)
     limit = PAID_LIMIT if subscribed else FREE_LIMIT
 
     if len(ads) >= limit:
         if not subscribed:
             try:
-                await callback.message.answer(
+                await callback.message.edit_text(
                     f"❌ وصلت للحد الأقصى ({FREE_LIMIT}) من الإعلانات المجانية.\n\n📢 اشترك في القناة لتحصل على {PAID_LIMIT} إعلانات كاملة:",
                     reply_markup=get_subscribe_keyboard()
                 )
-            except TelegramBadRequest:
-                await callback.answer("❌ وصلت للحد الأقصى من الإعلانات. اشترك في القناة للحصول على المزيد.", show_alert=True)
+            except TelegramBadRequest: pass
         else:
             await callback.answer(f"❌ وصلت للحد الأقصى {PAID_LIMIT} إعلانات.", show_alert=True)
         return
 
-    try:
-        await callback.message.edit_text("أرسل <b>صورة مع الوصف</b>، أو <b>الوصف فقط</b>:", parse_mode="HTML")
-    except TelegramBadRequest:
-        await callback.message.answer("أرسل <b>صورة مع الوصف</b>، أو <b>الوصف فقط</b>:", parse_mode="HTML")
+    try: await callback.message.edit_text("أرسل <b>صورة مع الوصف</b>، أو <b>الوصف فقط</b>:", parse_mode="HTML")
+    except TelegramBadRequest: await callback.message.answer("أرسل <b>صورة مع الوصف</b>، أو <b>الوصف فقط</b>:", parse_mode="HTML")
     await state.set_state(AdForm.waiting_for_content)
 
 @router.message(AdForm.waiting_for_content, F.text | F.photo)
@@ -264,9 +249,14 @@ async def process_content(message: types.Message, state: FSMContext):
     await show_ad_preview(message, state)
     await state.set_state(None)
 
-# ================= تحرير المحتوى والأزرار =================
+# ================= قفل التعديل وتحرير المحتوى =================
 @router.callback_query(F.data.startswith("edit_content_"))
 async def edit_content_prompt(callback: types.CallbackQuery, state: FSMContext):
+    subscribed = await is_user_subscribed(callback.bot, callback.from_user.id)
+    if not subscribed:
+        await callback.answer("❌ لا يمكنك تعديل الإعلانات إلا إذا كنت عضواً في القناة.", show_alert=True)
+        return
+
     doc_id = callback.data.split("edit_content_")[1]
     doc_snapshot = await asyncio.to_thread(db.collection("ads").document(doc_id).get)
     doc = doc_snapshot.to_dict() if doc_snapshot.exists else {}
@@ -290,6 +280,11 @@ async def process_edit_content(message: types.Message, state: FSMContext):
 
 @router.callback_query(F.data.startswith("edit_buttons_"))
 async def edit_buttons_prompt(callback: types.CallbackQuery, state: FSMContext):
+    subscribed = await is_user_subscribed(callback.bot, callback.from_user.id)
+    if not subscribed:
+        await callback.answer("❌ لا يمكنك تعديل الإعلانات إلا إذا كنت عضواً في القناة.", show_alert=True)
+        return
+
     doc_id = callback.data.split("edit_buttons_")[1]
     doc_snapshot = await asyncio.to_thread(db.collection("ads").document(doc_id).get)
     doc = doc_snapshot.to_dict() if doc_snapshot.exists else {}
@@ -319,14 +314,10 @@ async def process_btn_text(message: types.Message, state: FSMContext):
     await state.update_data(current_btn_text=message.text)
     data = await state.get_data()
 
-    try:
-        await message.bot.delete_message(message.chat.id, data.get('prompt_msg_id'))
-    except TelegramBadRequest:
-        pass
-    try:
-        await message.delete()
-    except TelegramBadRequest:
-        pass
+    try: await message.bot.delete_message(message.chat.id, data.get('prompt_msg_id'))
+    except TelegramBadRequest: pass
+    try: await message.delete()
+    except TelegramBadRequest: pass
 
     msg = await message.answer("🔗 ممتاز. أرسل الآن <b>رابط الزر</b> (https:// أو t.me/):", parse_mode="HTML")
     await state.update_data(prompt_msg_id=msg.message_id)
@@ -337,17 +328,13 @@ async def process_btn_url(message: types.Message, state: FSMContext):
     url = message.text.strip()
     data = await state.get_data()
 
-    try:
-        await message.bot.delete_message(message.chat.id, data.get('prompt_msg_id'))
-    except TelegramBadRequest:
-        pass
-    try:
-        await message.delete()
-    except TelegramBadRequest:
-        pass
+    try: await message.bot.delete_message(message.chat.id, data.get('prompt_msg_id'))
+    except TelegramBadRequest: pass
+    try: await message.delete()
+    except TelegramBadRequest: pass
 
     if not url.startswith(('https://', 't.me/')) or len(url) < 10:
-        msg = await message.answer("❌ الرابط غير صحيح. يجب أن يبدأ بـ <b>https://</b> أو <b>t.me/</b> ويكون كاملاً.\nأرسل الرابط مجدداً:", parse_mode="HTML")
+        msg = await message.answer("❌ الرابط غير صحيح. يجب أن يبدأ بـ <b>https://</b> أو <b>t.me/</b>.\nأرسل الرابط مجدداً:", parse_mode="HTML")
         await state.update_data(prompt_msg_id=msg.message_id)
         return
 
@@ -377,9 +364,13 @@ async def process_btn_url(message: types.Message, state: FSMContext):
         msg = await message.answer("❌ عذراً، تيليجرام يرفض هذا الرابط. يرجى إرسال رابط صالح:")
         await state.update_data(prompt_msg_id=msg.message_id)
 
-# ================= تعديل زر معين مع إضافة زر مسح لكل زر =================
 @router.callback_query(F.data == "select_btn_to_edit")
 async def select_btn_to_edit(callback: types.CallbackQuery, state: FSMContext):
+    subscribed = await is_user_subscribed(callback.bot, callback.from_user.id)
+    if not subscribed:
+        await callback.answer("❌ لا يمكنك تعديل الأزرار إلا إذا كنت عضواً في القناة.", show_alert=True)
+        return
+
     data = await state.get_data()
     buttons = normalize_buttons(data.get('buttons', []))
 
@@ -388,7 +379,6 @@ async def select_btn_to_edit(callback: types.CallbackQuery, state: FSMContext):
     for row in buttons:
         kb_row = []
         for btn in row:
-            # لكل زر نعرض زرين: اسم الزر (للتعديل) وزر مسح
             kb_row.append(InlineKeyboardButton(text=truncate_text(btn['text']), callback_data=f"edit_btn_idx_{idx}"))
             kb_row.append(InlineKeyboardButton(text="🗑️ مسح", callback_data=f"delete_btn_idx_{idx}"))
             idx += 1
@@ -397,10 +387,8 @@ async def select_btn_to_edit(callback: types.CallbackQuery, state: FSMContext):
     keyboard.append([InlineKeyboardButton(text="🔙 رجوع", callback_data="back_to_preview")])
     markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
 
-    try:
-        await callback.message.bot.delete_message(callback.message.chat.id, data.get('preview_msg_id'))
-    except TelegramBadRequest:
-        pass
+    try: await callback.message.bot.delete_message(callback.message.chat.id, data.get('preview_msg_id'))
+    except TelegramBadRequest: pass
 
     sent_msg = await callback.message.answer("اختر الزر الذي تود تعديله أو حذفه:", reply_markup=markup)
     await state.update_data(preview_msg_id=sent_msg.message_id)
@@ -432,23 +420,18 @@ async def delete_specific_btn(callback: types.CallbackQuery, state: FSMContext):
     for r_idx, row in enumerate(buttons):
         for c_idx in range(len(row)):
             if current_idx == idx_to_delete:
-                # احذف الزر
                 buttons[r_idx].pop(c_idx)
-                # إذا أصبحت الصفوف فارغة، احذف الصف
                 if len(buttons[r_idx]) == 0:
                     buttons.pop(r_idx)
                 removed = True
                 break
             current_idx += 1
-        if removed:
-            break
+        if removed: break
 
     if removed:
         await state.update_data(buttons=buttons)
-        try:
-            await show_ad_preview(callback.message, state, edit_mode=True)
-        except Exception:
-            pass
+        try: await show_ad_preview(callback.message, state, edit_mode=True)
+        except Exception: pass
         await callback.answer("🗑️ تم حذف الزر")
     else:
         await callback.answer("❌ لم أتمكن من العثور على الزر.", show_alert=True)
@@ -458,14 +441,10 @@ async def process_specific_btn_text(message: types.Message, state: FSMContext):
     await state.update_data(current_btn_text=message.text)
     data = await state.get_data()
 
-    try:
-        await message.bot.delete_message(message.chat.id, data.get('prompt_msg_id'))
-    except TelegramBadRequest:
-        pass
-    try:
-        await message.delete()
-    except TelegramBadRequest:
-        pass
+    try: await message.bot.delete_message(message.chat.id, data.get('prompt_msg_id'))
+    except TelegramBadRequest: pass
+    try: await message.delete()
+    except TelegramBadRequest: pass
 
     msg = await message.answer("🔗 ممتاز. أرسل الآن <b>الرابط الجديد</b> (https:// أو t.me/):", parse_mode="HTML")
     await state.update_data(prompt_msg_id=msg.message_id)
@@ -476,17 +455,13 @@ async def process_specific_btn_url(message: types.Message, state: FSMContext):
     url = message.text.strip()
     data = await state.get_data()
 
-    try:
-        await message.bot.delete_message(message.chat.id, data.get('prompt_msg_id'))
-    except TelegramBadRequest:
-        pass
-    try:
-        await message.delete()
-    except TelegramBadRequest:
-        pass
+    try: await message.bot.delete_message(message.chat.id, data.get('prompt_msg_id'))
+    except TelegramBadRequest: pass
+    try: await message.delete()
+    except TelegramBadRequest: pass
 
     if not url.startswith(('https://', 't.me/')) or len(url) < 10:
-        msg = await message.answer("❌ الرابط غير صحيح. يجب أن يبدأ بـ <b>https://</b> أو <b>t.me/</b> حصراً.\nأرسل الرابط مجدداً:", parse_mode="HTML")
+        msg = await message.answer("❌ الرابط غير صحيح. يجب أن يبدأ بـ <b>https://</b> أو <b>t.me/</b>.\nأرسل الرابط مجدداً:", parse_mode="HTML")
         await state.update_data(prompt_msg_id=msg.message_id)
         return
 
@@ -505,8 +480,7 @@ async def process_specific_btn_url(message: types.Message, state: FSMContext):
                 buttons[r_idx][c_idx] = {'text': data['current_btn_text'], 'url': url}
                 break
             current_idx += 1
-        if old_btn:
-            break
+        if old_btn: break
 
     await state.update_data(buttons=buttons)
 
@@ -536,10 +510,8 @@ async def finish_ad(callback: types.CallbackQuery, state: FSMContext):
         buttons_data = normalize_buttons(data.get('buttons', []))
         buttons_json = json.dumps(buttons_data)
 
-        try:
-            await callback.message.edit_reply_markup(reply_markup=None)
-        except TelegramBadRequest:
-            pass
+        try: await callback.message.edit_reply_markup(reply_markup=None)
+        except TelegramBadRequest: pass
 
         if data.get('editing_doc_id'):
             doc_id = data['editing_doc_id']
@@ -553,7 +525,7 @@ async def finish_ad(callback: types.CallbackQuery, state: FSMContext):
 
             update_text = (
                 f"✅ <b>تم التحديث بنجاح!</b>\n\n"
-                f"👇 اضغط لنسخ كود النشر السريع ثم الصقه في أي محادثة:\n"
+                f"👇 اضغط لنسخ كود النشر السريع:\n"
                 f"<code>@dddddddddh_bot {short_id}</code>"
             )
             await callback.message.answer(update_text, parse_mode="HTML", reply_markup=get_main_menu())
@@ -562,14 +534,20 @@ async def finish_ad(callback: types.CallbackQuery, state: FSMContext):
             subscribed = await is_user_subscribed(callback.bot, callback.from_user.id)
             ads = await asyncio.to_thread(fetch_ads_by_merchant, merchant_id) if merchant_id else []
             limit = PAID_LIMIT if subscribed else FREE_LIMIT
+            
             if len(ads) >= limit:
+                try: await callback.message.delete()
+                except TelegramBadRequest: pass
+                
                 if not subscribed:
                     await callback.message.answer(
-                        f"❌ لا يمكنك حفظ الإعلان الآن. وصلت للحد ({FREE_LIMIT}) من الإعلانات المجانية.\nاشترك في القناة للحصول على {PAID_LIMIT} إعلانات.",
+                        f"❌ لا يمكنك حفظ الإعلان الآن. وصلت للحد ({FREE_LIMIT}) المجاني.\nاشترك في القناة للحصول على {PAID_LIMIT} إعلانات.",
                         reply_markup=get_subscribe_keyboard()
                     )
                 else:
-                    await callback.answer(f"❌ وصلت للحد الأقصى {PAID_LIMIT} إعلانات.", show_alert=True)
+                    await callback.message.answer(f"❌ وصلت للحد الأقصى {PAID_LIMIT} إعلانات.", reply_markup=get_main_menu())
+                
+                await state.clear()
                 return
 
             ad_ref = db.collection("ads").document()
@@ -586,7 +564,7 @@ async def finish_ad(callback: types.CallbackQuery, state: FSMContext):
 
             success_text = (
                 f"✅ <b>تم إنشاء إعلانك بنجاح!</b>\n\n"
-                f"👇 اضغط على النص بالأسفل لنسخه، ثم الصقه في أي محادثة لنشر إعلانك:\n"
+                f"👇 اضغط على النص بالأسفل لنسخه:\n"
                 f"<code>@dddddddddh_bot {short_id}</code>"
             )
             await callback.message.answer(success_text, parse_mode="HTML", reply_markup=get_main_menu())
@@ -597,7 +575,7 @@ async def finish_ad(callback: types.CallbackQuery, state: FSMContext):
         await callback.message.answer(f"❌ حدث خطأ داخلي أثناء الحفظ.")
         await callback.answer()
 
-# ================= عرض وإدارة الإعلانات =================
+# ================= عرض الإعلانات (نظام الإخفاء) =================
 @router.callback_query(F.data == "list_ads")
 async def list_my_ads(callback: types.CallbackQuery):
     await callback.answer()
@@ -610,18 +588,24 @@ async def list_my_ads(callback: types.CallbackQuery):
     ads = await asyncio.to_thread(fetch_ads_by_merchant, merchant_id)
 
     if not ads:
-        try:
-            await callback.message.edit_text("ليس لديك إعلانات حالياً.", reply_markup=get_main_menu())
+        try: await callback.message.edit_text("ليس لديك إعلانات حالياً.", reply_markup=get_main_menu())
         except TelegramBadRequest:
-            try:
-                await callback.message.delete()
-            except TelegramBadRequest:
-                pass
+            try: await callback.message.delete()
+            except TelegramBadRequest: pass
             await callback.message.answer("ليس لديك إعلانات حالياً.", reply_markup=get_main_menu())
         return
 
+    subscribed = await is_user_subscribed(callback.bot, callback.from_user.id)
+    
+    if not subscribed:
+        visible_ads = ads[:FREE_LIMIT]
+        hidden_count = len(ads) - len(visible_ads)
+    else:
+        visible_ads = ads
+        hidden_count = 0
+
     keyboard = []
-    for ad in ads:
+    for ad in visible_ads:
         ad_data = ad.to_dict()
         desc = ad_data.get('description', '')
         if not desc or str(desc).strip() == "":
@@ -630,31 +614,28 @@ async def list_my_ads(callback: types.CallbackQuery):
         short_desc = str(desc)[:15].replace("\n", " ") + "..."
         keyboard.append([InlineKeyboardButton(text=f"📢 {short_desc} ({ad_data['ad_id']})", callback_data=f"view_ad_{ad_data['doc_id']}")])
 
-    subscribed = await is_user_subscribed(callback.bot, callback.from_user.id)
-    if not subscribed and len(ads) >= FREE_LIMIT:
+    if hidden_count > 0:
+        keyboard.append([InlineKeyboardButton(text=f"🔒 لديك {hidden_count} إعلانات مخفية (اشترك لإظهارها)", callback_data="show_subscribe_prompt")])
+    elif not subscribed and len(ads) >= FREE_LIMIT:
         keyboard.insert(0, [InlineKeyboardButton(text=f"🔒 اشترك لرفع الحد إلى {PAID_LIMIT}", callback_data="show_subscribe_prompt")])
 
     keyboard.append([InlineKeyboardButton(text="🔙 رجوع", callback_data="start_menu")])
     markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
 
-    try:
-        await callback.message.edit_text("📋 <b>قائمة إعلاناتك:</b>", parse_mode="HTML", reply_markup=markup)
+    try: await callback.message.edit_text("📋 <b>قائمة إعلاناتك:</b>", parse_mode="HTML", reply_markup=markup)
     except TelegramBadRequest:
-        try:
-            await callback.message.delete()
-        except TelegramBadRequest:
-            pass
+        try: await callback.message.delete()
+        except TelegramBadRequest: pass
         await callback.message.answer("📋 <b>قائمة إعلاناتك:</b>", parse_mode="HTML", reply_markup=markup)
 
 @router.callback_query(F.data == "show_subscribe_prompt")
 async def show_subscribe_prompt(callback: types.CallbackQuery):
     try:
-        await callback.message.answer(
-            f"📢 للوصول إلى {PAID_LIMIT} إعلانات، يرجى الاشتراك في القناة أولاً:",
+        await callback.message.edit_text(
+            f"📢 للوصول إلى كامل إعلاناتك ({PAID_LIMIT})، يرجى الاشتراك في القناة:",
             reply_markup=get_subscribe_keyboard()
         )
-    except TelegramBadRequest:
-        await callback.answer("يرجى الاشتراك في القناة للحصول على المزيد من الإعلانات.", show_alert=True)
+    except TelegramBadRequest: pass
     await callback.answer()
 
 @router.callback_query(F.data.startswith("view_ad_"))
@@ -672,10 +653,8 @@ async def view_ad_details(callback: types.CallbackQuery):
 
     markup = build_merged_keyboard(ad.get('buttons', []), doc_id)
 
-    try:
-        await callback.message.delete()
-    except TelegramBadRequest:
-        pass
+    try: await callback.message.delete()
+    except TelegramBadRequest: pass
 
     if photo_id:
         await callback.message.answer_photo(photo=photo_id, caption=desc, reply_markup=markup)
@@ -684,7 +663,46 @@ async def view_ad_details(callback: types.CallbackQuery):
 
     await callback.answer()
 
-# ================= زر الرجوع الترحيبي =================
+# ================= زر التحقق ضد السبام =================
+@router.callback_query(F.data == "check_subscription")
+async def check_subscription(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    current_time = time.time()
+
+    # حماية السبام Cooldown
+    if user_id in check_sub_cooldowns:
+        time_passed = current_time - check_sub_cooldowns[user_id]
+        if time_passed < COOLDOWN_SECONDS:
+            remaining = int(COOLDOWN_SECONDS - time_passed)
+            await callback.answer(f"⏳ يرجى الانتظار {remaining} ثوانٍ قبل المحاولة مرة أخرى.", show_alert=True)
+            return
+
+    check_sub_cooldowns[user_id] = current_time
+
+    subscribed = await is_user_subscribed(callback.bot, user_id, force_refresh=True)
+    
+    if subscribed:
+        check_sub_cooldowns.pop(user_id, None)
+        try:
+            await callback.message.delete()
+            await callback.message.answer(
+                "✅ تم التحقق من اشتراكك بنجاح!\nالآن يمكنك استخدام جميع ميزات البوت.",
+                reply_markup=get_main_menu()
+            )
+        except TelegramBadRequest:
+            await callback.answer("✅ تم التحقق من اشتراكك بنجاح.", show_alert=True)
+    else:
+        try:
+            await callback.message.delete()
+            await callback.message.answer(
+                "❌ <b>لم نتمكن من العثور على اشتراكك!</b>\n\nيرجى الانضمام للقناة أولاً ثم العودة والضغط على تحقق.",
+                parse_mode="HTML",
+                reply_markup=get_subscribe_keyboard()
+            )
+        except TelegramBadRequest:
+            await callback.answer("❌ لم يتم العثور على اشتراكك. تأكد من الانضمام ثم حاول مجدداً.", show_alert=True)
+
+# ================= القائمة الرئيسية والرجوع =================
 @router.callback_query(F.data == "start_menu")
 async def return_to_start(callback: types.CallbackQuery):
     await callback.answer()
@@ -698,10 +716,8 @@ async def return_to_start(callback: types.CallbackQuery):
         f"🎛️ اختر ما تود القيام به من الأزرار أدناه:"
     )
 
-    try:
-        await callback.message.edit_text(welcome_text, parse_mode="HTML", reply_markup=get_main_menu())
-    except TelegramBadRequest:
-        pass
+    try: await callback.message.edit_text(welcome_text, parse_mode="HTML", reply_markup=get_main_menu())
+    except TelegramBadRequest: pass
 
 @router.callback_query(F.data.startswith("delete_ad_"))
 async def delete_ad(callback: types.CallbackQuery):
@@ -714,12 +730,10 @@ async def delete_ad(callback: types.CallbackQuery):
 @router.inline_query()
 async def inline_ad_search(inline_query: InlineQuery):
     query = inline_query.query.strip().upper()
-    if not query:
-        return
+    if not query: return
 
     ads_list = await asyncio.to_thread(search_ad_by_id, query)
-    if not ads_list:
-        return
+    if not ads_list: return
 
     ad_data = ads_list[0].to_dict()
     desc = ad_data.get('description', '')
@@ -747,44 +761,35 @@ async def inline_ad_search(inline_query: InlineQuery):
 
     await inline_query.answer([result], cache_time=5)
 
-# ================= زر التحقق من الاشتراك (مع حماية ضد السبام) =================
-@router.callback_query(F.data == "check_subscription")
-async def check_subscription(callback: types.CallbackQuery):
-    user_id = callback.from_user.id
-    current_time = time.time()
+# ================= المراقبة الفورية (ChatMemberUpdated) =================
+@router.chat_member()
+async def chat_member_update_handler(event: types.ChatMemberUpdated):
+    target_channel = CHANNEL_USERNAME.replace('@', '')
+    if event.chat.username != target_channel:
+        return
 
-    # 1. نظام الحماية (Cooldown)
-    if user_id in check_sub_cooldowns:
-        time_passed = current_time - check_sub_cooldowns[user_id]
-        if time_passed < COOLDOWN_SECONDS:
-            remaining = int(COOLDOWN_SECONDS - time_passed)
-            await callback.answer(f"⏳ يرجى الانتظار {remaining} ثوانٍ قبل المحاولة مرة أخرى.", show_alert=True)
-            return  # نوقف العملية هنا تماماً، ولا نكلم سيرفر تيليجرام!
-
-    # تحديث وقت آخر محاولة لهذا المستخدم
-    check_sub_cooldowns[user_id] = current_time
-
-    # 2. فحص الاشتراك الفعلي (سيتم تنفيذه فقط إذا تجاوز الـ 10 ثوانٍ)
-    subscribed = await is_user_subscribed(callback.bot, user_id, force_refresh=True)
+    user_id = str(event.from_user.id)
+    new_status = event.new_chat_member.status
     
-    if subscribed:
-        # إذا اشترك، يمكننا مسح الـ cooldown الخاص به لتنظيف الذاكرة
-        check_sub_cooldowns.pop(user_id, None)
+    # حالة: غادر أو تم طرده
+    if new_status in ['left', 'kicked']:
+        await asyncio.to_thread(write_subscription_cache_sync, user_id, False, datetime.utcnow().isoformat())
         try:
-            await callback.message.delete()
-            await callback.message.answer(
-                "✅ تم التحقق من اشتراكك بنجاح!\nالآن يمكنك إنشاء حتى 10 إعلانات.",
-                reply_markup=get_main_menu()
-            )
-        except TelegramBadRequest:
-            await callback.answer("✅ تم التحقق من اشتراكك بنجاح.", show_alert=True)
-    else:
-        try:
-            await callback.message.delete()
-            await callback.message.answer(
-                "❌ <b>لم نتمكن من العثور على اشتراكك!</b>\n\nيرجى الانضمام للقناة أولاً ثم العودة والضغط على تحقق.",
+            await event.bot.send_message(
+                event.from_user.id,
+                "⚠️ <b>تنبيه:</b> لقد غادرت قناتنا الرسمية!\n\n🔒 تم إخفاء إعلاناتك الإضافية وتم قفل خاصية التعديل. يرجى العودة للقناة لتفعيلها.",
                 parse_mode="HTML",
                 reply_markup=get_subscribe_keyboard()
             )
-        except TelegramBadRequest:
-            await callback.answer("❌ لم يتم العثور على اشتراكك. تأكد من الانضمام ثم حاول مجدداً.", show_alert=True)
+        except Exception: pass
+            
+    # حالة: انضم
+    elif new_status in ['member', 'administrator', 'creator']:
+        await asyncio.to_thread(write_subscription_cache_sync, user_id, True, datetime.utcnow().isoformat())
+        try:
+            await event.bot.send_message(
+                event.from_user.id,
+                "✅ <b>شكراً لانضمامك!</b>\n\n🔓 تم تفعيل جميع إعلاناتك وصلاحيات التعديل بنجاح.",
+                parse_mode="HTML"
+            )
+        except Exception: pass
