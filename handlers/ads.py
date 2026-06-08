@@ -2,7 +2,7 @@ import json
 import asyncio
 import time
 from datetime import datetime, timedelta
-from typing import List, dict, Optional
+from typing import List, Optional
 
 from aiogram import Router, types, F
 from aiogram.fsm.context import FSMContext
