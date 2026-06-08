@@ -26,7 +26,7 @@ def search_ad_by_id(query):
     return list(db.collection("ads").where("ad_id", "==", query).limit(1).stream())
 
 # ================= الدوال المساعدة والترتيب =================
-def truncate_text(text, max_len=15):
+def truncate_text(text, max_len=20):
     """دالة القص البرمجي التلقائي للنصوص الطويلة لمنع تمدد الكيبورد"""
     if not text: return "زر"
     text = str(text)
