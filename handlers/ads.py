@@ -2,7 +2,7 @@ import json
 import asyncio
 import time
 from datetime import datetime, timedelta
-from typing import List, Optional
+from typing import List, dict, Optional
 
 from aiogram import Router, types, F
 from aiogram.fsm.context import FSMContext
@@ -163,14 +163,15 @@ def get_subscribe_keyboard():
         [InlineKeyboardButton(text="🔙 رجوع", callback_data="start_menu")]
     ])
 
-async def get_merchant_id(telegram_id: str) -> Optional[str]:
+# ================= جلب بيانات التاجر بالكامل (مع الرصيد التراكمي) =================
+async def get_merchant_data(telegram_id: str) -> dict:
     try:
         doc_snapshot = await asyncio.to_thread(db.collection("merchants").document(telegram_id).get)
         if doc_snapshot.exists:
-            return doc_snapshot.to_dict().get("merchant_id")
-        return None
+            return doc_snapshot.to_dict()
+        return {}
     except Exception:
-        return None
+        return {}
 
 # ================= معاينة الإعلان =================
 async def show_ad_preview(message: types.Message, state: FSMContext, edit_mode=False):
@@ -204,40 +205,49 @@ async def show_help(callback: types.CallbackQuery):
         "📚 <b>دليل الاستخدام:</b>\n\n"
         "1️⃣ اضغط إنشاء، وأرسل المحتوى، ثم استخدم لوحة التحكم لإضافة الأزرار.\n"
         "2️⃣ بعد الحفظ، انسخ كود النشر والصقه في أي محادثة.\n\n"
-        f"💡 المستخدمون غير المشتركين يحصلون على {FREE_LIMIT} إعلان.\nالمشتركون يحصلون على {PAID_LIMIT} إعلان."
+        f"💡 النظام يمنحك رصيد مجاني (تراكمي) لـ {FREE_LIMIT} إعلانات.\nالمشتركون في القناة يحصلون على {PAID_LIMIT} إعلانات نشطة بلا قيود تراكمية."
     )
     markup = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 رجوع", callback_data="start_menu")]])
     try: await callback.message.edit_text(help_text, parse_mode="HTML", reply_markup=markup)
     except TelegramBadRequest: await callback.message.answer(help_text, parse_mode="HTML", reply_markup=markup)
     await callback.answer()
 
-# ================= إنشاء إعلان جديد =================
+# ================= إنشاء إعلان جديد (نظام الرصيد التراكمي Lifetime Quota) =================
 @router.callback_query(F.data == "create_ad")
 async def start_creating_ad(callback: types.CallbackQuery, state: FSMContext):
-    merchant_id = await get_merchant_id(str(callback.from_user.id))
+    telegram_id = str(callback.from_user.id)
+    merchant_data = await get_merchant_data(telegram_id)
+    merchant_id = merchant_data.get("merchant_id")
     
     if not merchant_id:
         await callback.answer("❌ يرجى الضغط على /start لتسجيل حسابك وتحديث بياناتك أولاً.", show_alert=True)
         return
 
+    # جلب الرصيد التراكمي (كم إعلان صممه في حياته)
+    total_ads_created = merchant_data.get("total_ads_created", 0)
     ads = await asyncio.to_thread(fetch_ads_by_merchant, merchant_id)
     subscribed = await is_user_subscribed(callback.bot, callback.from_user.id)
-    limit = PAID_LIMIT if subscribed else FREE_LIMIT
 
-    if len(ads) >= limit:
-        if not subscribed:
+    # التحقق من القيود التراكمية لغير المشتركين
+    if not subscribed:
+        if total_ads_created >= FREE_LIMIT:
             try:
                 await callback.message.edit_text(
-                    f"❌ وصلت للحد الأقصى ({FREE_LIMIT}) من الإعلانات المجانية.\n\n📢 اشترك في القناة لتحصل على {PAID_LIMIT} إعلانات كاملة:",
-                    reply_markup=get_subscribe_keyboard()
+                    f"❌ <b>نفد رصيدك المجاني!</b>\n\nلقد قمت بإنشاء ({FREE_LIMIT}) إعلانات مسبقاً (النظام تراكمي).\n📢 اشترك في القناة لتتمكن من إنشاء حتى {PAID_LIMIT} إعلانات وإدارتها بلا قيود:",
+                    reply_markup=get_subscribe_keyboard(),
+                    parse_mode="HTML"
                 )
             except TelegramBadRequest: pass
-        else:
-            await callback.answer(f"❌ وصلت للحد الأقصى {PAID_LIMIT} إعلانات.", show_alert=True)
-        return
+            return
+    else:
+        # المشتركون يُحاسبون على عدد الإعلانات "النشطة" فقط، وليس التراكمي
+        if len(ads) >= PAID_LIMIT:
+            await callback.answer(f"❌ وصلت للحد الأقصى {PAID_LIMIT} إعلانات نشطة.", show_alert=True)
+            return
 
     try: await callback.message.edit_text("أرسل <b>صورة مع الوصف</b>، أو <b>الوصف فقط</b>:", parse_mode="HTML")
     except TelegramBadRequest: await callback.message.answer("أرسل <b>صورة مع الوصف</b>، أو <b>الوصف فقط</b>:", parse_mode="HTML")
+    
     await state.set_state(AdForm.waiting_for_content)
 
 @router.message(AdForm.waiting_for_content, F.text | F.photo)
@@ -505,7 +515,9 @@ async def clear_btns(callback: types.CallbackQuery, state: FSMContext):
 async def finish_ad(callback: types.CallbackQuery, state: FSMContext):
     try:
         data = await state.get_data()
-        merchant_id = await get_merchant_id(str(callback.from_user.id))
+        telegram_id = str(callback.from_user.id)
+        merchant_data = await get_merchant_data(telegram_id)
+        merchant_id = merchant_data.get("merchant_id")
 
         buttons_data = normalize_buttons(data.get('buttons', []))
         buttons_json = json.dumps(buttons_data)
@@ -532,21 +544,25 @@ async def finish_ad(callback: types.CallbackQuery, state: FSMContext):
 
         else:
             subscribed = await is_user_subscribed(callback.bot, callback.from_user.id)
+            total_ads_created = merchant_data.get("total_ads_created", 0)
             ads = await asyncio.to_thread(fetch_ads_by_merchant, merchant_id) if merchant_id else []
-            limit = PAID_LIMIT if subscribed else FREE_LIMIT
             
-            if len(ads) >= limit:
+            # التحقق النهائي قبل الحفظ (سد الثغرة)
+            if not subscribed and total_ads_created >= FREE_LIMIT:
                 try: await callback.message.delete()
                 except TelegramBadRequest: pass
                 
-                if not subscribed:
-                    await callback.message.answer(
-                        f"❌ لا يمكنك حفظ الإعلان الآن. وصلت للحد ({FREE_LIMIT}) المجاني.\nاشترك في القناة للحصول على {PAID_LIMIT} إعلانات.",
-                        reply_markup=get_subscribe_keyboard()
-                    )
-                else:
-                    await callback.message.answer(f"❌ وصلت للحد الأقصى {PAID_LIMIT} إعلانات.", reply_markup=get_main_menu())
+                await callback.message.answer(
+                    f"❌ لا يمكنك حفظ الإعلان الآن. لقد استهلكت رصيدك التراكمي ({FREE_LIMIT}).\nاشترك في القناة للحصول على {PAID_LIMIT} إعلانات.",
+                    reply_markup=get_subscribe_keyboard()
+                )
+                await state.clear()
+                return
+            elif subscribed and len(ads) >= PAID_LIMIT:
+                try: await callback.message.delete()
+                except TelegramBadRequest: pass
                 
+                await callback.message.answer(f"❌ وصلت للحد الأقصى {PAID_LIMIT} إعلانات نشطة.", reply_markup=get_main_menu())
                 await state.clear()
                 return
 
@@ -561,6 +577,13 @@ async def finish_ad(callback: types.CallbackQuery, state: FSMContext):
                 "buttons": buttons_json
             }
             await asyncio.to_thread(ad_ref.set, new_data)
+            
+            # زيادة الرصيد التراكمي للتاجر
+            await asyncio.to_thread(
+                db.collection("merchants").document(telegram_id).set,
+                {"total_ads_created": total_ads_created + 1},
+                merge=True
+            )
 
             success_text = (
                 f"✅ <b>تم إنشاء إعلانك بنجاح!</b>\n\n"
@@ -580,7 +603,10 @@ async def finish_ad(callback: types.CallbackQuery, state: FSMContext):
 async def list_my_ads(callback: types.CallbackQuery):
     await callback.answer()
 
-    merchant_id = await get_merchant_id(str(callback.from_user.id))
+    telegram_id = str(callback.from_user.id)
+    merchant_data = await get_merchant_data(telegram_id)
+    merchant_id = merchant_data.get("merchant_id")
+    
     if not merchant_id:
         await callback.message.answer("❌ يرجى الضغط على /start لتحديث بياناتك.")
         return
@@ -616,7 +642,7 @@ async def list_my_ads(callback: types.CallbackQuery):
 
     if hidden_count > 0:
         keyboard.append([InlineKeyboardButton(text=f"🔒 لديك {hidden_count} إعلانات مخفية (اشترك لإظهارها)", callback_data="show_subscribe_prompt")])
-    elif not subscribed and len(ads) >= FREE_LIMIT:
+    elif not subscribed:
         keyboard.insert(0, [InlineKeyboardButton(text=f"🔒 اشترك لرفع الحد إلى {PAID_LIMIT}", callback_data="show_subscribe_prompt")])
 
     keyboard.append([InlineKeyboardButton(text="🔙 رجوع", callback_data="start_menu")])
