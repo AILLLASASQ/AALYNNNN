@@ -31,7 +31,7 @@ def truncate_text(text, max_len=15):
     return text[:max_len] + "..." if len(text) > max_len else text
 
 def normalize_buttons(buttons_data):
-    """تحويل الأزرار إلى صفوف منتظمة (زرين فقط لكل سطر كحد أقصى)"""
+    """استرجاع النظام اليدوي: احترام ترتيب التاجر بدون دمج تلقائي إجباري"""
     if not buttons_data: return []
     if isinstance(buttons_data, str):
         try: buttons_data = json.loads(buttons_data)
@@ -39,20 +39,12 @@ def normalize_buttons(buttons_data):
             
     if not buttons_data: return []
     
-    # تحويل البيانات إلى قائمة مسطحة أولاً لتسهيل الترتيب
-    flat_list = []
-    for item in buttons_data:
-        if isinstance(item, list):
-            flat_list.extend(item)
-        else:
-            flat_list.append(item)
-            
-    # إعادة التوزيع: 2 لكل سطر
-    formatted = []
-    for i in range(0, len(flat_list), 2):
-        formatted.append(flat_list[i:i+2])
+    # إذا كانت البيانات بالفعل مصفوفة داخل مصفوفة (الوضع الصحيح للترتيب اليدوي)
+    if isinstance(buttons_data[0], list): 
+        return buttons_data
         
-    return formatted
+    # حماية من أي أخطاء سابقة: وضع كل زر في سطر كافتراضي
+    return [[b] for b in buttons_data]
 
 # ================= بناء واجهات الكيبورد =================
 def get_main_menu():
@@ -71,7 +63,7 @@ def build_ad_markup(buttons_list):
     return InlineKeyboardMarkup(inline_keyboard=keyboard) if keyboard else None
 
 def build_merged_keyboard(buttons_list, doc_id):
-    """كيبورد إدارة الإعلان للتاجر (دمج زرين في السطر)"""
+    """كيبورد إدارة الإعلان للتاجر"""
     buttons_list = normalize_buttons(buttons_list)
     keyboard = []
     
@@ -91,7 +83,7 @@ def build_merged_keyboard(buttons_list, doc_id):
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 def build_draft_keyboard(buttons_list):
-    """كيبورد المسودة النهائي الصامت"""
+    """كيبورد المسودة النهائي"""
     buttons_list = normalize_buttons(buttons_list)
     keyboard = []
     
@@ -127,7 +119,7 @@ async def show_help(callback: types.CallbackQuery):
     await callback.message.edit_text(help_text, parse_mode="HTML", reply_markup=markup)
     await callback.answer()
 
-# ================= نظام المسودة الصامت للإنشاء والتعديل =================
+# ================= نظام المسودة وتخصيص الأزرار =================
 @router.callback_query(F.data == "create_ad")
 async def start_creating_ad(callback: types.CallbackQuery, state: FSMContext):
     merchant_id = await get_merchant_id(str(callback.from_user.id))
@@ -145,7 +137,8 @@ async def process_content(message: types.Message, state: FSMContext):
     text = message.text or message.caption or ""
     photo_id = message.photo[-1].file_id if message.photo else None
     
-    await state.update_data(description=text, photo_id=photo_id, buttons=[])
+    # تعيين start_new_row=True بشكل افتراضي لأول زر
+    await state.update_data(description=text, photo_id=photo_id, buttons=[], start_new_row=True)
     await message.answer("✅ تم حفظ المحتوى.\n\nالآن أرسل <b>اسم الزر الأول</b> (مثال: شراء).\nإذا كنت لا تريد إضافة أزرار، أرسل /done", parse_mode="HTML")
     await state.set_state(AdForm.waiting_for_btn_text)
 
@@ -169,12 +162,52 @@ async def process_btn_url(message: types.Message, state: FSMContext):
     data = await state.get_data()
     buttons = data.get('buttons', [])
     current_text = data.get('current_btn_text', 'زر')
+    start_new_row = data.get('start_new_row', True)
     
-    buttons.append({'text': current_text, 'url': url})
+    new_btn = {'text': current_text, 'url': url}
+    
+    # نظام إضافة الأزرار اليدوي الدقيق
+    if start_new_row or not buttons:
+        buttons.append([new_btn])
+    else:
+        # السماح بحد أقصى زرين في السطر للحفاظ على التنسيق
+        if len(buttons[-1]) < 2:
+            buttons[-1].append(new_btn)
+        else:
+            buttons.append([new_btn]) # إجبار النزول لسطر جديد إذا امتلأ السطر
+
     await state.update_data(buttons=buttons)
     
-    await message.answer("✅ تم إضافة الزر.\n\nأرسل <b>اسم الزر التالي</b>، أو أرسل /done للانتهاء والمعاينة:", parse_mode="HTML")
+    # سؤال المستخدم عن مكان الزر القادم لإعطائه التحكم المطلق
+    markup = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="⬅️ زر بجانبه", callback_data="add_btn_same"),
+            InlineKeyboardButton(text="⏬ سطر جديد", callback_data="add_btn_new")
+        ],
+        [InlineKeyboardButton(text="✅ إنهاء الأزرار والمعاينة", callback_data="finish_btn_setup")]
+    ])
+    
+    await message.answer(f"✅ تم إضافة زر ( {current_text} ).\nأين تريد وضع الزر القادم؟", reply_markup=markup)
+    await state.set_state(None) # تجميد الإدخال النصي حتى يختار
+
+@router.callback_query(F.data.in_({"add_btn_same", "add_btn_new"}))
+async def prompt_next_btn(callback: types.CallbackQuery, state: FSMContext):
+    is_new_row = (callback.data == "add_btn_new")
+    await state.update_data(start_new_row=is_new_row)
+    
+    try: await callback.message.delete() # مسح الكيبورد الصغير للحفاظ على نظافة المحادثة
+    except TelegramBadRequest: pass
+    
+    await callback.message.answer("✏️ أرسل <b>اسم الزر التالي</b>:", parse_mode="HTML")
     await state.set_state(AdForm.waiting_for_btn_text)
+    await callback.answer()
+
+@router.callback_query(F.data == "finish_btn_setup")
+async def finish_btn_setup(callback: types.CallbackQuery, state: FSMContext):
+    try: await callback.message.delete()
+    except TelegramBadRequest: pass
+    await show_final_draft(callback.message, state)
+    await callback.answer()
 
 # ================= عرض المسودة والحفظ =================
 async def show_final_draft(message: types.Message, state: FSMContext):
@@ -275,7 +308,8 @@ async def edit_buttons_prompt(callback: types.CallbackQuery, state: FSMContext):
         ad_id=doc.get('ad_id'),
         description=doc.get('description', ''),
         photo_id=doc.get('photo_id'),
-        buttons=[] # مسح الأزرار القديمة لإعادة تشكيلها
+        buttons=[], # مسح الأزرار القديمة
+        start_new_row=True # التجهيز لإنشاء سطر جديد
     )
     await callback.message.answer("⚙️ سيتم إعادة تعيين الأزرار.\n\nأرسل <b>اسم الزر الأول</b>، أو أرسل /done لإزالة جميع الأزرار والإنهاء:", parse_mode="HTML")
     await state.set_state(AdForm.waiting_for_btn_text)
