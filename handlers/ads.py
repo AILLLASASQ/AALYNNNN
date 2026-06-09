@@ -185,6 +185,21 @@ async def get_merchant_data(telegram_id: str) -> dict:
     except Exception:
         return {}
 
+# ================= دالة إنشاء توقيع الإعلان =================
+async def get_ad_signature(telegram_id: str, first_name: str) -> str:
+    merchant_data = await get_merchant_data(telegram_id)
+    username = merchant_data.get('username')
+    
+    if username and username != "None":
+        merchant_tag = f"@{username}"
+    else:
+        merchant_tag = f"<a href='tg://user?id={telegram_id}'>{first_name}</a>"
+
+    return (
+        f"\n\n━━━━━━━━━━━━\n"
+        f"👤 <b>صاحب الاعلان:</b> {merchant_tag}\n"
+    )
+
 # ================= معاينة الإعلان =================
 async def show_ad_preview(message: types.Message, state: FSMContext, edit_mode=False):
     data = await state.get_data()
@@ -192,12 +207,26 @@ async def show_ad_preview(message: types.Message, state: FSMContext, edit_mode=F
     photo_id = data.get('photo_id')
     buttons = normalize_buttons(data.get('buttons', []))
 
+    # جلب التوقيع ودمجه مع المعاينة
+    telegram_id = str(message.chat.id)
+    first_name = message.chat.first_name or "تاجر"
+    signature = await get_ad_signature(telegram_id, first_name)
+    
+    full_desc = desc + signature if desc else signature
+
     markup = build_preview_keyboard(buttons)
-    text_preview = f"👀 <b>معاينة الإعلان:</b>\n\n{desc}" if desc else "👀 <b>معاينة الإعلان:</b>\nبدون نص"
+    text_preview = f"👀 <b>معاينة الإعلان:</b>\n\n{full_desc}"
 
     if edit_mode and data.get('preview_msg_id'):
         try: await message.bot.delete_message(message.chat.id, data['preview_msg_id'])
         except TelegramBadRequest: pass
+
+    if photo_id:
+        sent_msg = await message.answer_photo(photo=photo_id, caption=text_preview, reply_markup=markup, parse_mode="HTML")
+    else:
+        sent_msg = await message.answer(text_preview, reply_markup=markup, parse_mode="HTML")
+
+    await state.update_data(preview_msg_id=sent_msg.message_id)
 
     if photo_id:
         sent_msg = await message.answer_photo(photo=photo_id, caption=text_preview, reply_markup=markup, parse_mode="HTML")
@@ -689,15 +718,19 @@ async def view_ad_details(callback: types.CallbackQuery):
     desc = ad.get('description', '')
     photo_id = ad.get('photo_id')
 
+    # جلب التوقيع ودمجه هنا أيضاً
+    signature = await get_ad_signature(str(callback.from_user.id), callback.from_user.first_name)
+    full_desc = desc + signature if desc else signature
+
     markup = build_merged_keyboard(ad.get('buttons', []), doc_id)
 
     try: await callback.message.delete()
     except TelegramBadRequest: pass
 
     if photo_id:
-        await callback.message.answer_photo(photo=photo_id, caption=desc, reply_markup=markup)
+        await callback.message.answer_photo(photo=photo_id, caption=full_desc, reply_markup=markup, parse_mode="HTML")
     else:
-        await callback.message.answer(desc or "بدون نص", reply_markup=markup)
+        await callback.message.answer(full_desc, reply_markup=markup, parse_mode="HTML")
 
     await callback.answer()
 
@@ -781,34 +814,19 @@ async def inline_ad_search(inline_query: InlineQuery):
 
     ad_data = ads_list[0].to_dict()
     
-    # --- 1. تطبيق الحماية الصارمة (Strict Ownership Check) ---
+    # --- تطبيق الحماية الصارمة ---
     telegram_id = str(inline_query.from_user.id)
     merchant_data = await get_merchant_data(telegram_id)
     merchant_id = merchant_data.get("merchant_id")
     
-    # إذا كان الشخص الذي يستخدم الإنلاين ليس هو صاحب الإعلان، نمنع ظهور النتيجة
     if merchant_id != ad_data.get('merchant_id'):
         return
 
-    # --- 2. التوقيع الإجباري (Forced Signature) ---
+    # --- دمج التوقيع الإجباري ---
     original_desc = ad_data.get('description', '')
     photo_id = ad_data.get('photo_id')
     
-    # جلب يوزر التاجر لوضعه في التوقيع (وإذا لم يكن لديه يوزر نضع اسمه)
-    username = merchant_data.get('username')
-    if username and username != "None":
-        merchant_tag = f"@{username}"
-    else:
-        merchant_tag = f"<a href='tg://user?id={telegram_id}'>{inline_query.from_user.first_name}</a>"
-
-    # تصميم التوقيع الذي سيظهر أسفل الإعلان
-    signature = (
-        f"\n\n━━━━━━━━━━━━\n"
-        f"👤 <b>التاجر المعتمد:</b> {merchant_tag}\n"
-        f"🆔 <b>رقم الإعلان:</b> {ad_data.get('ad_id')}"
-    )
-    
-    # دمج النص الأصلي مع التوقيع
+    signature = await get_ad_signature(telegram_id, inline_query.from_user.first_name)
     desc_with_signature = original_desc + signature
 
     markup = build_ad_markup(ad_data.get('buttons', []))
