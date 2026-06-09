@@ -218,16 +218,12 @@ async def show_ad_preview(message: types.Message, state: FSMContext, edit_mode=F
     text_preview = f"👀 <b>معاينة الإعلان:</b>\n\n{full_desc}"
 
     if edit_mode and data.get('preview_msg_id'):
-        try: await message.bot.delete_message(message.chat.id, data['preview_msg_id'])
-        except TelegramBadRequest: pass
+        try: 
+            await message.bot.delete_message(message.chat.id, data['preview_msg_id'])
+        except TelegramBadRequest: 
+            pass
 
-    if photo_id:
-        sent_msg = await message.answer_photo(photo=photo_id, caption=text_preview, reply_markup=markup, parse_mode="HTML")
-    else:
-        sent_msg = await message.answer(text_preview, reply_markup=markup, parse_mode="HTML")
-
-    await state.update_data(preview_msg_id=sent_msg.message_id)
-
+    # سيتم إرسال الرسالة مرة واحدة فقط هنا
     if photo_id:
         sent_msg = await message.answer_photo(photo=photo_id, caption=text_preview, reply_markup=markup, parse_mode="HTML")
     else:
