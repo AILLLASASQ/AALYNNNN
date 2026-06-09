@@ -336,7 +336,8 @@ async def edit_content_prompt(callback: types.CallbackQuery, state: FSMContext):
     await state.update_data(
         editing_doc_id=doc_id,
         ad_id=doc.get('ad_id'),
-        buttons=normalize_buttons(doc.get('buttons', []))
+        buttons=normalize_buttons(doc.get('buttons', [])),
+        hide_signature=doc.get('hide_signature', False) # السطر المضاف
     )
     await callback.message.answer("أرسل <b>الصورة والوصف الجديد</b>، أو <b>الوصف فقط</b>:", parse_mode="HTML")
     await state.set_state(AdForm.waiting_for_edit_content)
@@ -366,7 +367,8 @@ async def edit_buttons_prompt(callback: types.CallbackQuery, state: FSMContext):
         ad_id=doc.get('ad_id'),
         description=doc.get('description', ''),
         photo_id=doc.get('photo_id'),
-        buttons=normalize_buttons(doc.get('buttons', []))
+        buttons=normalize_buttons(doc.get('buttons', [])),
+        hide_signature=doc.get('hide_signature', False) # السطر المضاف
     )
     await show_ad_preview(callback.message, state)
     await callback.answer()
@@ -738,10 +740,14 @@ async def view_ad_details(callback: types.CallbackQuery):
     ad = doc_snapshot.to_dict()
     desc = ad.get('description', '')
     photo_id = ad.get('photo_id')
+    hide_signature = ad.get('hide_signature', False) # جلب الحالة من الداتابيز
 
-    # جلب التوقيع ودمجه هنا أيضاً
-    signature = await get_ad_signature(str(callback.from_user.id), callback.from_user.first_name)
-    full_desc = desc + signature if desc else signature
+    # دمج التوقيع فقط إذا لم يكن مخفياً
+    if not hide_signature:
+        signature = await get_ad_signature(str(callback.from_user.id), callback.from_user.first_name)
+        full_desc = desc + signature if desc else signature
+    else:
+        full_desc = desc if desc else "إعلان بصورة"
 
     markup = build_merged_keyboard(ad.get('buttons', []), doc_id)
 
