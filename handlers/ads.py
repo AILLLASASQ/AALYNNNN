@@ -770,7 +770,7 @@ async def delete_ad(callback: types.CallbackQuery):
     await callback.answer("✅ تم الحذف!", show_alert=True)
     await list_my_ads(callback)
 
-# ================= وضع الإنلاين =================
+# ================= وضع الإنلاين (حماية المالكية + التوقيع الإجباري) =================
 @router.inline_query()
 async def inline_ad_search(inline_query: InlineQuery):
     query = inline_query.query.strip().upper()
@@ -780,18 +780,47 @@ async def inline_ad_search(inline_query: InlineQuery):
     if not ads_list: return
 
     ad_data = ads_list[0].to_dict()
-    desc = ad_data.get('description', '')
+    
+    # --- 1. تطبيق الحماية الصارمة (Strict Ownership Check) ---
+    telegram_id = str(inline_query.from_user.id)
+    merchant_data = await get_merchant_data(telegram_id)
+    merchant_id = merchant_data.get("merchant_id")
+    
+    # إذا كان الشخص الذي يستخدم الإنلاين ليس هو صاحب الإعلان، نمنع ظهور النتيجة
+    if merchant_id != ad_data.get('merchant_id'):
+        return
+
+    # --- 2. التوقيع الإجباري (Forced Signature) ---
+    original_desc = ad_data.get('description', '')
     photo_id = ad_data.get('photo_id')
+    
+    # جلب يوزر التاجر لوضعه في التوقيع (وإذا لم يكن لديه يوزر نضع اسمه)
+    username = merchant_data.get('username')
+    if username and username != "None":
+        merchant_tag = f"@{username}"
+    else:
+        merchant_tag = f"<a href='tg://user?id={telegram_id}'>{inline_query.from_user.first_name}</a>"
+
+    # تصميم التوقيع الذي سيظهر أسفل الإعلان
+    signature = (
+        f"\n\n━━━━━━━━━━━━\n"
+        f"👤 <b>التاجر المعتمد:</b> {merchant_tag}\n"
+        f"🆔 <b>رقم الإعلان:</b> {ad_data.get('ad_id')}"
+    )
+    
+    # دمج النص الأصلي مع التوقيع
+    desc_with_signature = original_desc + signature
 
     markup = build_ad_markup(ad_data.get('buttons', []))
-    title_text = desc[:30] + "..." if desc else "إعلان بصورة"
+    title_text = original_desc[:30] + "..." if original_desc else "إعلان بصورة"
 
     if photo_id:
         result = InlineQueryResultCachedPhoto(
             id=ad_data['doc_id'],
             photo_file_id=photo_id,
             title=f"إعلان: {title_text}",
-            caption=desc,
+            caption=desc_with_signature,
+            parse_mode="HTML",
             reply_markup=markup
         )
     else:
@@ -799,7 +828,7 @@ async def inline_ad_search(inline_query: InlineQuery):
             id=ad_data['doc_id'],
             title=f"إعلان: {title_text}",
             description="اضغط للنشر",
-            input_message_content=InputTextMessageContent(message_text=desc, parse_mode="HTML"),
+            input_message_content=InputTextMessageContent(message_text=desc_with_signature, parse_mode="HTML"),
             reply_markup=markup
         )
 
