@@ -143,41 +143,54 @@ def build_merged_keyboard(buttons_list, doc_id):
     ])
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
-# ================= بناء واجهات الكيبورد لمعاينة الإعلان (التصميم الذكي) =================
-def build_preview_keyboard(buttons_list):
+@router.callback_query(F.data == "toggle_signature")
+async def toggle_signature_action(callback: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    current_status = data.get('hide_signature', False)
+    
+    # عكس الحالة الحالية
+    await state.update_data(hide_signature=not current_status)
+    
+    # إعادة رسم المعاينة بالتحديث الجديد
+    await show_ad_preview(callback.message, state, edit_mode=True)
+    await callback.answer("تم تحديث حالة التوقيع")
+
+def build_preview_keyboard(buttons_list, hide_signature=False):
     buttons_list = normalize_buttons(buttons_list)
     keyboard = []
 
+    # تحديد حالة زر التوقيع
+    sig_text = "🔴 التوقيع: معطل" if hide_signature else "🟢 التوقيع: مفعل"
+    sig_btn = InlineKeyboardButton(text=sig_text, callback_data="toggle_signature")
+
     if not buttons_list:
-        # إذا لم يضف أي زر بعد، نعرض زراً واحداً كبيراً
-        keyboard.append([InlineKeyboardButton(text="➕ إضافة زر جديد", callback_data="add_btn_new")])
+        keyboard.append([
+            InlineKeyboardButton(text="➕ إضافة زر جديد", callback_data="add_btn_new"),
+            sig_btn
+        ])
     else:
-        # 1️⃣ رسم أزرار التاجر ودمج زر (➕) الصغير معها
         for i, row in enumerate(buttons_list):
             kb_row = []
-            
-            # وضع أزرار التاجر الفعلية
             for btn in row:
                 kb_row.append(InlineKeyboardButton(text=truncate_text(btn['text']), url=btn['url']))
             
-            # إذا كان هذا هو "السطر الأخير" وفيه أقل من زرين، ندمج زر (➕) بجانبه
             if i == len(buttons_list) - 1 and len(row) < 2:
                 kb_row.append(InlineKeyboardButton(text="➕", callback_data="add_btn_same"))
             
             keyboard.append(kb_row)
 
-        # 2️⃣ زر السطر الجديد (كبير وواضح بالأسفل)
-        keyboard.append([InlineKeyboardButton(text="⏬ إضافة زر بسطر جديد", callback_data="add_btn_new")])
+        # دمج زر التوقيع بجانب زر السطر الجديد
+        keyboard.append([
+            InlineKeyboardButton(text="⏬ زر بسطر جديد", callback_data="add_btn_new"),
+            sig_btn
+        ])
 
-        # 3️⃣ أدوات التعديل والحذف
         keyboard.append([
             InlineKeyboardButton(text="✏️ تعديل الأزرار", callback_data="select_btn_to_edit"),
             InlineKeyboardButton(text="🗑️ مسح الكل", callback_data="clear_btns")
         ])
 
-    # 4️⃣ زر الحفظ النهائي
     keyboard.append([InlineKeyboardButton(text="✅ إنهاء وحفظ", callback_data="finish_ad")])
-    
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 def get_subscribe_keyboard():
@@ -212,21 +225,22 @@ async def get_ad_signature(telegram_id: str, first_name: str) -> str:
         f"👤 <b>صاحب الاعلان:</b> {merchant_tag}\n"
     )
 
-# ================= معاينة الإعلان =================
 async def show_ad_preview(message: types.Message, state: FSMContext, edit_mode=False):
     data = await state.get_data()
     desc = data.get('description', '')
     photo_id = data.get('photo_id')
     buttons = normalize_buttons(data.get('buttons', []))
+    hide_signature = data.get('hide_signature', False) # جلب حالة التوقيع
 
-    # جلب التوقيع ودمجه مع المعاينة
-    telegram_id = str(message.chat.id)
-    first_name = message.chat.first_name or "تاجر"
-    signature = await get_ad_signature(telegram_id, first_name)
-    
-    full_desc = desc + signature if desc else signature
+    if not hide_signature:
+        telegram_id = str(message.chat.id)
+        first_name = message.chat.first_name or "تاجر"
+        signature = await get_ad_signature(telegram_id, first_name)
+        full_desc = desc + signature if desc else signature
+    else:
+        full_desc = desc if desc else "إعلان بصورة"
 
-    markup = build_preview_keyboard(buttons)
+    markup = build_preview_keyboard(buttons, hide_signature)
     text_preview = f"👀 <b>معاينة الإعلان:</b>\n\n{full_desc}"
 
     if edit_mode and data.get('preview_msg_id'):
@@ -235,7 +249,6 @@ async def show_ad_preview(message: types.Message, state: FSMContext, edit_mode=F
         except TelegramBadRequest: 
             pass
 
-    # سيتم إرسال الرسالة مرة واحدة فقط هنا
     if photo_id:
         sent_msg = await message.answer_photo(photo=photo_id, caption=text_preview, reply_markup=markup, parse_mode="HTML")
     else:
@@ -579,7 +592,8 @@ async def finish_ad(callback: types.CallbackQuery, state: FSMContext):
             update_data = {
                 "description": data.get('description', ''),
                 "photo_id": data.get('photo_id'),
-                "buttons": buttons_json
+                "buttons": buttons_json,
+                "hide_signature": data.get('hide_signature', False)  # تم الإضافة هنا
             }
             await asyncio.to_thread(db.collection("ads").document(doc_id).set, update_data, merge=True)
             short_id = data.get('ad_id') or doc_id[:6].upper()
@@ -587,7 +601,7 @@ async def finish_ad(callback: types.CallbackQuery, state: FSMContext):
             update_text = (
                 f"✅ <b>تم التحديث بنجاح!</b>\n\n"
                 f"👇 اضغط لنسخ كود النشر السريع:\n"
-                f"<code>@dddddddddh_bot {short_id}</code>"
+                f"<code>@bot_username {short_id}</code>"
             )
             await callback.message.answer(update_text, parse_mode="HTML", reply_markup=get_main_menu())
 
@@ -596,7 +610,6 @@ async def finish_ad(callback: types.CallbackQuery, state: FSMContext):
             total_ads_created = merchant_data.get("total_ads_created", 0)
             ads = await asyncio.to_thread(fetch_ads_by_merchant, merchant_id) if merchant_id else []
             
-            # التحقق النهائي قبل الحفظ (سد الثغرة)
             if not subscribed and total_ads_created >= FREE_LIMIT:
                 try: await callback.message.delete()
                 except TelegramBadRequest: pass
@@ -623,11 +636,11 @@ async def finish_ad(callback: types.CallbackQuery, state: FSMContext):
                 "merchant_id": merchant_id,
                 "description": data.get('description', ''),
                 "photo_id": data.get('photo_id'),
-                "buttons": buttons_json
+                "buttons": buttons_json,
+                "hide_signature": data.get('hide_signature', False)  # وتم الإضافة هنا أيضاً
             }
             await asyncio.to_thread(ad_ref.set, new_data)
             
-            # زيادة الرصيد التراكمي للتاجر
             await asyncio.to_thread(
                 db.collection("merchants").document(telegram_id).set,
                 {"total_ads_created": total_ads_created + 1},
@@ -637,7 +650,7 @@ async def finish_ad(callback: types.CallbackQuery, state: FSMContext):
             success_text = (
                 f"✅ <b>تم إنشاء إعلانك بنجاح!</b>\n\n"
                 f"👇 اضغط على النص بالأسفل لنسخه:\n"
-                f"<code>@dddddddddh_bot {short_id}</code>"
+                f"<code>@bot_username {short_id}</code>"
             )
             await callback.message.answer(success_text, parse_mode="HTML", reply_markup=get_main_menu())
 
@@ -811,7 +824,7 @@ async def delete_ad(callback: types.CallbackQuery):
     await callback.answer("✅ تم الحذف!", show_alert=True)
     await list_my_ads(callback)
 
-# ================= وضع الإنلاين (حماية المالكية + التوقيع الإجباري) =================
+# ================= وضع الإنلاين (حماية المالكية + التوقيع) =================
 @router.inline_query()
 async def inline_ad_search(inline_query: InlineQuery):
     query = inline_query.query.strip().upper()
@@ -830,12 +843,16 @@ async def inline_ad_search(inline_query: InlineQuery):
     if merchant_id != ad_data.get('merchant_id'):
         return
 
-    # --- دمج التوقيع الإجباري ---
+    # --- معالجة التوقيع بناءً على اختيار التاجر ---
     original_desc = ad_data.get('description', '')
     photo_id = ad_data.get('photo_id')
+    hide_signature = ad_data.get('hide_signature', False)
     
-    signature = await get_ad_signature(telegram_id, inline_query.from_user.first_name)
-    desc_with_signature = original_desc + signature
+    if not hide_signature:
+        signature = await get_ad_signature(telegram_id, inline_query.from_user.first_name)
+        desc_with_signature = original_desc + signature if original_desc else signature
+    else:
+        desc_with_signature = original_desc
 
     markup = build_ad_markup(ad_data.get('buttons', []))
     title_text = original_desc[:30] + "..." if original_desc else "إعلان بصورة"
