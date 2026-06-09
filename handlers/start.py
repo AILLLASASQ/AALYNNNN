@@ -3,16 +3,10 @@ from aiogram import Router, types
 from aiogram.filters import CommandStart
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from database import db
+# استيراد دوال الفحص والقائمة من ملف الإعلانات
+from handlers.ads import is_user_subscribed, get_main_menu
 
 router = Router()
-
-def get_main_menu():
-    keyboard = [
-        [InlineKeyboardButton(text="➕ إنشاء إعلان", callback_data="create_ad")],
-        [InlineKeyboardButton(text="📋 عرض الإعلانات", callback_data="list_ads")],
-        [InlineKeyboardButton(text="ℹ️ شرح الاستخدام", callback_data="help_usage")]
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 @router.message(CommandStart())
 async def start_cmd(message: types.Message):
@@ -27,8 +21,12 @@ async def start_cmd(message: types.Message):
         doc_ref.set({
             "merchant_id": merchant_id,
             "username": message.from_user.username,
-            "telegram_id": telegram_id
+            "telegram_id": telegram_id,
+            "total_ads_created": 0 # إضافة الرصيد التراكمي للمستخدم الجديد
         })
+
+    # فحص الاشتراك للمستخدم عند ضغط ستارت
+    subscribed = await is_user_subscribed(message.bot, message.from_user.id)
 
     text = (
         f"أهلاً بك يا <b>{message.from_user.full_name}</b> 🌟\n\n"
@@ -37,4 +35,5 @@ async def start_cmd(message: types.Message):
         f"اختر ما تود القيام به من القائمة أدناه 👇"
     )
 
-    await message.answer(text, reply_markup=get_main_menu(), parse_mode="HTML")
+    # تمرير حالة الاشتراك لرسم الأزرار بشكل صحيح
+    await message.answer(text, reply_markup=get_main_menu(subscribed), parse_mode="HTML")

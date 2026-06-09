@@ -100,12 +100,24 @@ def normalize_buttons(buttons_data):
     return [[b] for b in buttons_data]
 
 # ================= بناء واجهات الكيبورد =================
-def get_main_menu():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="➕ إنشاء إعلان جديد", callback_data="create_ad")],
-        [InlineKeyboardButton(text="📋 إعلاناتي", callback_data="list_ads")],
-        [InlineKeyboardButton(text="ℹ️ شرح الاستخدام", callback_data="help_usage")]
-    ])
+def get_main_menu(is_subscribed=True):
+    keyboard = [
+        [InlineKeyboardButton(text="➕ إنشاء إعلان جديد", callback_data="create_ad")]
+    ]
+    
+    # إذا كان غير مشترك، نضع زر التفعيل بجانب إعلاناتي
+    if not is_subscribed:
+        keyboard.append([
+            InlineKeyboardButton(text="📋 إعلاناتي", callback_data="list_ads"),
+            InlineKeyboardButton(text="🔒 فتح 10 إعلانات", callback_data="show_subscribe_prompt")
+        ])
+    else:
+        # إذا اشترك، يظهر زر إعلاناتي لوحده
+        keyboard.append([InlineKeyboardButton(text="📋 إعلاناتي", callback_data="list_ads")])
+        
+    keyboard.append([InlineKeyboardButton(text="ℹ️ شرح الاستخدام", callback_data="help_usage")])
+    
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 def build_ad_markup(buttons_list):
     buttons_list = normalize_buttons(buttons_list)
@@ -728,7 +740,7 @@ async def check_subscription(callback: types.CallbackQuery):
         except TelegramBadRequest:
             await callback.answer("❌ لم يتم العثور على اشتراكك. تأكد من الانضمام ثم حاول مجدداً.", show_alert=True)
 
-# ================= القائمة الرئيسية والرجوع =================
+# ================= زر الرجوع الترحيبي =================
 @router.callback_query(F.data == "start_menu")
 async def return_to_start(callback: types.CallbackQuery):
     await callback.answer()
@@ -736,14 +748,20 @@ async def return_to_start(callback: types.CallbackQuery):
     user_name = callback.from_user.first_name
     user_id = callback.from_user.id
 
+    # نتحقق من حالة اشتراكه هنا
+    subscribed = await is_user_subscribed(callback.bot, user_id)
+
     welcome_text = (
         f"👋 <b>أهلاً بعودتك يا {user_name}</b>\n\n"
         f"🆔 <b>الآيدي:</b> <code>{user_id}</code>\n\n"
         f"🎛️ اختر ما تود القيام به من الأزرار أدناه:"
     )
 
-    try: await callback.message.edit_text(welcome_text, parse_mode="HTML", reply_markup=get_main_menu())
-    except TelegramBadRequest: pass
+    try: 
+        # نمرر حالة الاشتراك لدالة القائمة لتعرف هل ترسم زر القفل أم لا
+        await callback.message.edit_text(welcome_text, parse_mode="HTML", reply_markup=get_main_menu(subscribed))
+    except TelegramBadRequest: 
+        pass
 
 @router.callback_query(F.data.startswith("delete_ad_"))
 async def delete_ad(callback: types.CallbackQuery):
