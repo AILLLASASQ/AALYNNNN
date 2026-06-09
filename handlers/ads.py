@@ -143,29 +143,41 @@ def build_merged_keyboard(buttons_list, doc_id):
     ])
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
+# ================= بناء واجهات الكيبورد لمعاينة الإعلان (التصميم الذكي) =================
 def build_preview_keyboard(buttons_list):
     buttons_list = normalize_buttons(buttons_list)
     keyboard = []
-    for row in buttons_list:
-        keyboard.append([InlineKeyboardButton(text=truncate_text(btn['text']), url=btn['url']) for btn in row])
 
     if not buttons_list:
-        keyboard.append([InlineKeyboardButton(text="➕ إضافة زر", callback_data="add_btn_new")])
+        # إذا لم يضف أي زر بعد، نعرض زراً واحداً كبيراً
+        keyboard.append([InlineKeyboardButton(text="➕ إضافة زر جديد", callback_data="add_btn_new")])
     else:
-        last_row_len = len(buttons_list[-1])
-        controls = []
-        if last_row_len < 2:
-            controls.append(InlineKeyboardButton(text="➕ زر بجانبه", callback_data="add_btn_same"))
-        controls.append(InlineKeyboardButton(text="⏬ زر بالأسفل", callback_data="add_btn_new"))
-        keyboard.append(controls)
+        # 1️⃣ رسم أزرار التاجر ودمج زر (➕) الصغير معها
+        for i, row in enumerate(buttons_list):
+            kb_row = []
+            
+            # وضع أزرار التاجر الفعلية
+            for btn in row:
+                kb_row.append(InlineKeyboardButton(text=truncate_text(btn['text']), url=btn['url']))
+            
+            # إذا كان هذا هو "السطر الأخير" وفيه أقل من زرين، ندمج زر (➕) بجانبه
+            if i == len(buttons_list) - 1 and len(row) < 2:
+                kb_row.append(InlineKeyboardButton(text="➕", callback_data="add_btn_same"))
+            
+            keyboard.append(kb_row)
 
-    if buttons_list:
+        # 2️⃣ زر السطر الجديد (كبير وواضح بالأسفل)
+        keyboard.append([InlineKeyboardButton(text="⏬ إضافة زر بسطر جديد", callback_data="add_btn_new")])
+
+        # 3️⃣ أدوات التعديل والحذف
         keyboard.append([
-            InlineKeyboardButton(text="✏️ تعديل زر", callback_data="select_btn_to_edit"),
+            InlineKeyboardButton(text="✏️ تعديل الأزرار", callback_data="select_btn_to_edit"),
             InlineKeyboardButton(text="🗑️ مسح الكل", callback_data="clear_btns")
         ])
 
+    # 4️⃣ زر الحفظ النهائي
     keyboard.append([InlineKeyboardButton(text="✅ إنهاء وحفظ", callback_data="finish_ad")])
+    
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 def get_subscribe_keyboard():
