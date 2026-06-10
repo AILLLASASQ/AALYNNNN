@@ -3,6 +3,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.types import BotCommand
 from config import BOT_TOKEN
 from handlers import start, ads, admin
+from middlewares.ban_check import BanMiddleware
 
 async def set_commands(bot: Bot):
     # إعداد قائمة الأوامر التي تظهر في زر (Menu)
@@ -20,9 +21,16 @@ async def main():
     bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher()
     
+    # 1. تفعيل بوابة الحظر
+    ban_middleware = BanMiddleware()
+    dp.message.middleware(ban_middleware)
+    dp.callback_query.middleware(ban_middleware)
+    dp.inline_query.middleware(ban_middleware)
+    
+    # 2. تسجيل مسارات الأوامر (مرة واحدة فقط)
     dp.include_router(start.router)
     dp.include_router(ads.router)
-    dp.include_router(admin.router)
+    dp.include_router(admin.router) 
     
     # تسجيل الأوامر عند تشغيل البوت
     await set_commands(bot)
