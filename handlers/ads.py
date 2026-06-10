@@ -593,7 +593,7 @@ async def finish_ad(callback: types.CallbackQuery, state: FSMContext):
             update_text = (
                 f"✅ <b>تم التحديث بنجاح!</b>\n\n"
                 f"👇 اضغط لنسخ كود النشر السريع:\n"
-                f"<code>@bot_username {short_id}</code>"
+                f"<code>@TR_Adssbot {short_id}</code>"
             )
             await callback.message.answer(update_text, parse_mode="HTML", reply_markup=get_main_menu())
 
@@ -663,7 +663,7 @@ async def finish_ad(callback: types.CallbackQuery, state: FSMContext):
             success_text = (
                 f"✅ <b>تم إنشاء إعلانك بنجاح!</b>\n\n"
                 f"👇 اضغط على النص بالأسفل لنسخه:\n"
-                f"<code>@bot_username {short_id}</code>"
+                f"<code>@TR_Adssbot {short_id}</code>"
             )
             await callback.message.answer(success_text, parse_mode="HTML", reply_markup=get_main_menu())
 

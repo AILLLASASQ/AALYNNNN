@@ -27,7 +27,7 @@ async def main():
     dp.inline_query.middleware(ban_middleware)
     
     # 2. تفعيل بوابة الانتظار (التحكم بالسبام)
-    throttling_middleware = ThrottlingMiddleware(slow_mode_delay=3.0) # يمكنك تغيير 3.0 إلى 5.0
+    throttling_middleware = ThrottlingMiddleware(slow_mode_delay=2.0) # يمكنك تغيير 3.0 إلى 5.0
     dp.message.middleware(throttling_middleware)
     dp.callback_query.middleware(throttling_middleware)
 
