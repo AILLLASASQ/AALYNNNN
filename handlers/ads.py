@@ -4,7 +4,9 @@ import time
 from datetime import datetime, timedelta
 from typing import List, Optional
 
+from aiogram.filters import Command
 from aiogram import Router, types, F
+from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
@@ -929,6 +931,7 @@ async def chat_member_update_handler(event: types.ChatMemberUpdated):
                 reply_markup=get_subscribe_keyboard()
             )
         except Exception: pass
+
             
     # حالة: انضم
     elif new_status in ['member', 'administrator', 'creator']:
@@ -940,3 +943,11 @@ async def chat_member_update_handler(event: types.ChatMemberUpdated):
                 parse_mode="HTML"
             )
         except Exception: pass
+
+@router.message(Command("check"))
+async def client_check_subscription(message: types.Message):
+    await message.answer(
+        f"📢 <b>الانضمام للقناة الرسمية:</b>\n\nيرجى الاشتراك في القناة وتفعيل التنبيهات، ثم اضغط على زر التحقق بالأسفل لتحديث صلاحيات حسابك.",
+        reply_markup=get_subscribe_keyboard(),
+        parse_mode="HTML"
+    )       

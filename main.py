@@ -7,11 +7,9 @@ from middlewares.ban_check import BanMiddleware
 from middlewares.throttling import ThrottlingMiddleware
 
 async def set_commands(bot: Bot):
-    # إعداد قائمة الأوامر التي تظهر في زر (Menu)
     commands = [
-        BotCommand(command="start", description="بدء التشغيل وعرض القائمة"),
-        BotCommand(command="create_ad", description="إنشاء إعلان جديد"),
-        BotCommand(command="my_ads", description="عرض إعلاناتي")
+        BotCommand(command="start", description="🏠 القائمة الرئيسية"),
+        BotCommand(command="check", description="🔐 رابط القناة والتحقق من الاشتراك")
     ]
     await bot.set_my_commands(commands)
 
