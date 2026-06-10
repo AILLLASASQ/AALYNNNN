@@ -4,6 +4,7 @@ from aiogram.types import BotCommand
 from config import BOT_TOKEN
 from handlers import start, ads, admin
 from middlewares.ban_check import BanMiddleware
+from middlewares.throttling import ThrottlingMiddleware
 
 async def set_commands(bot: Bot):
     # إعداد قائمة الأوامر التي تظهر في زر (Menu)
@@ -27,10 +28,15 @@ async def main():
     dp.callback_query.middleware(ban_middleware)
     dp.inline_query.middleware(ban_middleware)
     
-    # 2. تسجيل مسارات الأوامر (مرة واحدة فقط)
+    # 2. تفعيل بوابة الانتظار (التحكم بالسبام)
+    throttling_middleware = ThrottlingMiddleware(slow_mode_delay=3.0) # يمكنك تغيير 3.0 إلى 5.0
+    dp.message.middleware(throttling_middleware)
+    dp.callback_query.middleware(throttling_middleware)
+
+    # 3. تسجيل مسارات الأوامر
     dp.include_router(start.router)
     dp.include_router(ads.router)
-    dp.include_router(admin.router) 
+    dp.include_router(admin.router)
     
     # تسجيل الأوامر عند تشغيل البوت
     await set_commands(bot)
