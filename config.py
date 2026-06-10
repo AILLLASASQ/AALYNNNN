@@ -5,6 +5,9 @@ load_dotenv()
 
 # Bot and Firebase
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+OWNER_ID = os.getenv("OWNER_ID")
+# سجل الإدارة المباشر
+LOG_GROUP_ID = os.getenv("LOG_GROUP_ID")
 
 # In Render: set FIREBASE_CREDENTIALS_JSON to the JSON string of the service account key
 FIREBASE_CREDENTIALS_JSON = os.getenv("FIREBASE_CREDENTIALS_JSON")

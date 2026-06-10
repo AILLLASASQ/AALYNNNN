@@ -17,7 +17,7 @@ from aiogram.types import (
 )
 from aiogram.exceptions import TelegramBadRequest
 
-from config import CHANNEL_USERNAME, FREE_LIMIT, PAID_LIMIT, SUB_CHECK_TTL
+from config import CHANNEL_USERNAME, FREE_LIMIT, PAID_LIMIT, SUB_CHECK_TTL, LOG_GROUP_ID
 from database import db
 
 router = Router()
@@ -639,7 +639,7 @@ async def finish_ad(callback: types.CallbackQuery, state: FSMContext):
                 "description": data.get('description', ''),
                 "photo_id": data.get('photo_id'),
                 "buttons": buttons_json,
-                "hide_signature": data.get('hide_signature', False)  # وتم الإضافة هنا أيضاً
+                "hide_signature": data.get('hide_signature', False)
             }
             await asyncio.to_thread(ad_ref.set, new_data)
             
@@ -648,6 +648,31 @@ async def finish_ad(callback: types.CallbackQuery, state: FSMContext):
                 {"total_ads_created": total_ads_created + 1},
                 merge=True
             )
+
+            # === كود سجل الإدارة المباشر (Log Group) الجديد ===
+            if LOG_GROUP_ID:
+                try:
+                    # تحويل الآيدي إلى رقم إذا كان نصاً يمثل رقماً
+                    target_chat = int(LOG_GROUP_ID) if LOG_GROUP_ID.strip().replace('-', '').isdigit() else LOG_GROUP_ID
+                    
+                    merchant_name = callback.from_user.full_name
+                    merchant_user = f"@{callback.from_user.username}" if callback.from_user.username else "بدون يوزر"
+                    
+                    log_text = (
+                        f"📢 <b>إعلان جديد تم إنشاؤه في البوت!</b>\n\n"
+                        f"👤 <b>التاجر:</b> {merchant_name} ({merchant_user})\n"
+                        f"🆔 <b>آيدي التاجر:</b> <code>{telegram_id}</code>\n"
+                        f"🏷️ <b>كود الإعلان:</b> <code>{short_id}</code>\n"
+                        f"📝 <b>محتوى الإعلان:</b>\n\n{data.get('description', '')}"
+                    )
+                    
+                    if data.get('photo_id'):
+                        await callback.bot.send_photo(chat_id=target_chat, photo=data.get('photo_id'), caption=log_text, parse_mode="HTML")
+                    else:
+                        await callback.bot.send_message(chat_id=target_chat, text=log_text, parse_mode="HTML")
+                except Exception as log_error:
+                    print(f"خطأ أثناء إرسال السجل للمجموعة: {log_error}")
+            # =================================================
 
             success_text = (
                 f"✅ <b>تم إنشاء إعلانك بنجاح!</b>\n\n"

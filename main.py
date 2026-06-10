@@ -2,7 +2,7 @@ import asyncio
 from aiogram import Bot, Dispatcher
 from aiogram.types import BotCommand
 from config import BOT_TOKEN
-from handlers import start, ads
+from handlers import start, ads, admin
 
 async def set_commands(bot: Bot):
     # إعداد قائمة الأوامر التي تظهر في زر (Menu)
@@ -22,6 +22,7 @@ async def main():
     
     dp.include_router(start.router)
     dp.include_router(ads.router)
+    dp.include_router(admin.router)
     
     # تسجيل الأوامر عند تشغيل البوت
     await set_commands(bot)
