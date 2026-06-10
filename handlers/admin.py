@@ -6,6 +6,8 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from config import OWNER_ID
 from database import db
+from handlers.ads import normalize_buttons, truncate_text
+from aiogram.exceptions import TelegramBadRequest
 
 router = Router()
 
@@ -78,13 +80,22 @@ async def process_info(message: types.Message, state: FSMContext):
         await message.reply("❌ التاجر غير موجود.", reply_markup=get_admin_keyboard())
     else:
         data = doc.to_dict()
+        merchant_id = data.get('merchant_id')
         text = (f"👤 <b>بيانات التاجر:</b>\n\n"
                 f"🆔 الآيدي: <code>{target_id}</code>\n"
                 f"👤 اليوزر: @{data.get('username', 'بدون يوزر')}\n"
                 f"📊 الإعلانات: {data.get('total_ads_created', 0)}\n"
                 f"✅ مشترك: {'نعم' if data.get('is_subscribed') else 'لا'}\n"
                 f"🚫 محظور: {'نعم' if data.get('is_banned') else 'لا'}")
-        await message.reply(text, parse_mode="HTML", reply_markup=get_admin_keyboard())
+        
+        # إنشاء لوحة أزرار مخصصة للنتيجة
+        keyboard = []
+        if merchant_id:
+            keyboard.append([InlineKeyboardButton(text="👀 عرض إعلانات التاجر", callback_data=f"adm_ads_{merchant_id}")])
+        keyboard.append([InlineKeyboardButton(text="🔙 رجوع للوحة", callback_data="admin_stats")])
+        markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+        await message.reply(text, parse_mode="HTML", reply_markup=markup)
     await state.clear()
 
 # ================= الحظر =================
@@ -137,3 +148,70 @@ async def process_broadcast(message: types.Message, state: FSMContext):
             
     await message.reply(f"✅ اكتملت الإذاعة!\nوصلت إلى: {success} تاجر.", reply_markup=get_admin_keyboard())
     await state.clear()
+
+    # ================= عرض قائمة إعلانات تاجر معين للمالك =================
+@router.callback_query(F.data.startswith("adm_ads_"))
+async def admin_view_user_ads(callback: types.CallbackQuery):
+    merchant_id = callback.data.split("adm_ads_")[1]
+    ads = list(await asyncio.to_thread(lambda: list(db.collection("ads").where("merchant_id", "==", merchant_id).stream())))
+
+    if not ads:
+        await callback.answer("❌ هذا التاجر لا يملك أي إعلانات حالياً.", show_alert=True)
+        return
+
+    keyboard = []
+    for ad in ads:
+        ad_data = ad.to_dict()
+        desc = ad_data.get('description', 'إعلان بصورة')
+        short_desc = str(desc)[:20].replace("\n", " ") + "..."
+        keyboard.append([InlineKeyboardButton(text=f"📢 {short_desc}", callback_data=f"adm_view_ad_{ad_data['doc_id']}")])
+
+    keyboard.append([InlineKeyboardButton(text="❌ إغلاق", callback_data="admin_close")])
+    markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+    await callback.message.answer(f"📋 <b>إعلانات التاجر ({len(ads)}):</b>\nاختر إعلاناً لمعاينته:", parse_mode="HTML", reply_markup=markup)
+    await callback.answer()
+
+# ================= معاينة الإعلان المٌحدد =================
+@router.callback_query(F.data.startswith("adm_view_ad_"))
+async def admin_view_specific_ad(callback: types.CallbackQuery):
+    doc_id = callback.data.split("adm_view_ad_")[1]
+    doc_snapshot = await asyncio.to_thread(db.collection("ads").document(doc_id).get)
+
+    if not doc_snapshot.exists:
+        await callback.answer("❌ الإعلان غير موجود أو تم حذفه.", show_alert=True)
+        return
+
+    ad = doc_snapshot.to_dict()
+    desc = ad.get('description', '')
+    photo_id = ad.get('photo_id')
+    
+    # بناء أزرار الإعلان مع زر الحذف الخاص بالإدارة
+    buttons_list = normalize_buttons(ad.get('buttons', []))
+    admin_keyboard = []
+    for row in buttons_list:
+        admin_keyboard.append([InlineKeyboardButton(text=truncate_text(btn['text']), url=btn['url']) for btn in row])
+    
+    admin_keyboard.append([InlineKeyboardButton(text="--- أدوات الرقابة ---", callback_data="ignore_btn")])
+    admin_keyboard.append([InlineKeyboardButton(text="🗑️ حذف الإعلان نهائياً", callback_data=f"adm_del_ad_{doc_id}")])
+    markup = InlineKeyboardMarkup(inline_keyboard=admin_keyboard)
+
+    full_desc = f"👀 <b>معاينة الإدارة للإعلان:</b>\n\n{desc}"
+
+    if photo_id:
+        await callback.message.answer_photo(photo=photo_id, caption=full_desc, reply_markup=markup, parse_mode="HTML")
+    else:
+        await callback.message.answer(full_desc, reply_markup=markup, parse_mode="HTML")
+    await callback.answer()
+
+# ================= حذف الإعلان من قبل المالك =================
+@router.callback_query(F.data.startswith("adm_del_ad_"))
+async def admin_delete_ad(callback: types.CallbackQuery):
+    doc_id = callback.data.split("adm_del_ad_")[1]
+    await asyncio.to_thread(db.collection("ads").document(doc_id).delete)
+    
+    try: await callback.message.edit_reply_markup(reply_markup=None)
+    except TelegramBadRequest: pass
+    
+    await callback.message.reply("✅ <b>تم حذف الإعلان المخالف بنجاح من قاعدة البيانات.</b>", parse_mode="HTML")
+    await callback.answer("تم الحذف!", show_alert=True)

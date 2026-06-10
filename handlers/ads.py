@@ -4,7 +4,6 @@ import time
 from datetime import datetime, timedelta
 from typing import List, Optional
 
-from aiogram.filters import Command
 from aiogram import Router, types, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -107,18 +106,15 @@ def get_main_menu(is_subscribed=True):
         [InlineKeyboardButton(text="➕ إنشاء إعلان جديد", callback_data="create_ad")]
     ]
     
-    # إذا كان غير مشترك، نضع زر التفعيل بجانب إعلاناتي
     if not is_subscribed:
         keyboard.append([
             InlineKeyboardButton(text="📋 إعلاناتي", callback_data="list_ads"),
             InlineKeyboardButton(text="🔒 فتح 10 إعلانات", callback_data="show_subscribe_prompt")
         ])
     else:
-        # إذا اشترك، يظهر زر إعلاناتي لوحده
         keyboard.append([InlineKeyboardButton(text="📋 إعلاناتي", callback_data="list_ads")])
         
     keyboard.append([InlineKeyboardButton(text="ℹ️ شرح الاستخدام", callback_data="help_usage")])
-    
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 def build_ad_markup(buttons_list):
@@ -149,11 +145,7 @@ def build_merged_keyboard(buttons_list, doc_id):
 async def toggle_signature_action(callback: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
     current_status = data.get('hide_signature', False)
-    
-    # عكس الحالة الحالية
     await state.update_data(hide_signature=not current_status)
-    
-    # إعادة رسم المعاينة بالتحديث الجديد
     await show_ad_preview(callback.message, state, edit_mode=True)
     await callback.answer("تم تحديث حالة التوقيع")
 
@@ -161,7 +153,6 @@ def build_preview_keyboard(buttons_list, hide_signature=False):
     buttons_list = normalize_buttons(buttons_list)
     keyboard = []
 
-    # تحديد حالة زر التوقيع
     sig_text = "🔴 التوقيع: معطل" if hide_signature else "🟢 التوقيع: مفعل"
     sig_btn = InlineKeyboardButton(text=sig_text, callback_data="toggle_signature")
 
@@ -181,7 +172,6 @@ def build_preview_keyboard(buttons_list, hide_signature=False):
             
             keyboard.append(kb_row)
 
-        # دمج زر التوقيع بجانب زر السطر الجديد
         keyboard.append([
             InlineKeyboardButton(text="⏬ زر بسطر جديد", callback_data="add_btn_new"),
             sig_btn
@@ -202,7 +192,7 @@ def get_subscribe_keyboard():
         [InlineKeyboardButton(text="🔙 رجوع", callback_data="start_menu")]
     ])
 
-# ================= جلب بيانات التاجر بالكامل (مع الرصيد التراكمي) =================
+# ================= جلب بيانات التاجر والتوقيع =================
 async def get_merchant_data(telegram_id: str) -> dict:
     try:
         doc_snapshot = await asyncio.to_thread(db.collection("merchants").document(telegram_id).get)
@@ -212,7 +202,6 @@ async def get_merchant_data(telegram_id: str) -> dict:
     except Exception:
         return {}
 
-# ================= دالة إنشاء توقيع الإعلان =================
 async def get_ad_signature(telegram_id: str, first_name: str) -> str:
     merchant_data = await get_merchant_data(telegram_id)
     username = merchant_data.get('username')
@@ -232,7 +221,7 @@ async def show_ad_preview(message: types.Message, state: FSMContext, edit_mode=F
     desc = data.get('description', '')
     photo_id = data.get('photo_id')
     buttons = normalize_buttons(data.get('buttons', []))
-    hide_signature = data.get('hide_signature', False) # جلب حالة التوقيع
+    hide_signature = data.get('hide_signature', False)
 
     if not hide_signature:
         telegram_id = str(message.chat.id)
@@ -276,7 +265,7 @@ async def show_help(callback: types.CallbackQuery):
     except TelegramBadRequest: await callback.message.answer(help_text, parse_mode="HTML", reply_markup=markup)
     await callback.answer()
 
-# ================= إنشاء إعلان جديد (نظام الرصيد التراكمي Lifetime Quota) =================
+# ================= إنشاء إعلان جديد =================
 @router.callback_query(F.data == "create_ad")
 async def start_creating_ad(callback: types.CallbackQuery, state: FSMContext):
     telegram_id = str(callback.from_user.id)
@@ -287,12 +276,10 @@ async def start_creating_ad(callback: types.CallbackQuery, state: FSMContext):
         await callback.answer("❌ يرجى الضغط على /start لتسجيل حسابك وتحديث بياناتك أولاً.", show_alert=True)
         return
 
-    # جلب الرصيد التراكمي (كم إعلان صممه في حياته)
     total_ads_created = merchant_data.get("total_ads_created", 0)
     ads = await asyncio.to_thread(fetch_ads_by_merchant, merchant_id)
     subscribed = await is_user_subscribed(callback.bot, callback.from_user.id)
 
-    # التحقق من القيود التراكمية لغير المشتركين
     if not subscribed:
         if total_ads_created >= FREE_LIMIT:
             try:
@@ -304,7 +291,6 @@ async def start_creating_ad(callback: types.CallbackQuery, state: FSMContext):
             except TelegramBadRequest: pass
             return
     else:
-        # المشتركون يُحاسبون على عدد الإعلانات "النشطة" فقط، وليس التراكمي
         if len(ads) >= PAID_LIMIT:
             await callback.answer(f"❌ وصلت للحد الأقصى {PAID_LIMIT} إعلانات نشطة.", show_alert=True)
             return
@@ -314,7 +300,8 @@ async def start_creating_ad(callback: types.CallbackQuery, state: FSMContext):
     
     await state.set_state(AdForm.waiting_for_content)
 
-@router.message(AdForm.waiting_for_content, F.text | F.photo)
+# تم تطبيق فلتر المنع هنا للأوامر
+@router.message(AdForm.waiting_for_content, (F.text & ~F.text.startswith('/')) | F.photo)
 async def process_content(message: types.Message, state: FSMContext):
     text = message.text or message.caption or ""
     photo_id = message.photo[-1].file_id if message.photo else None
@@ -339,12 +326,13 @@ async def edit_content_prompt(callback: types.CallbackQuery, state: FSMContext):
         editing_doc_id=doc_id,
         ad_id=doc.get('ad_id'),
         buttons=normalize_buttons(doc.get('buttons', [])),
-        hide_signature=doc.get('hide_signature', False) # السطر المضاف
+        hide_signature=doc.get('hide_signature', False)
     )
     await callback.message.answer("أرسل <b>الصورة والوصف الجديد</b>، أو <b>الوصف فقط</b>:", parse_mode="HTML")
     await state.set_state(AdForm.waiting_for_edit_content)
 
-@router.message(AdForm.waiting_for_edit_content, F.text | F.photo)
+# تم تطبيق فلتر المنع هنا للأوامر
+@router.message(AdForm.waiting_for_edit_content, (F.text & ~F.text.startswith('/')) | F.photo)
 async def process_edit_content(message: types.Message, state: FSMContext):
     text = message.text or message.caption or ""
     photo_id = message.photo[-1].file_id if message.photo else None
@@ -370,7 +358,7 @@ async def edit_buttons_prompt(callback: types.CallbackQuery, state: FSMContext):
         description=doc.get('description', ''),
         photo_id=doc.get('photo_id'),
         buttons=normalize_buttons(doc.get('buttons', [])),
-        hide_signature=doc.get('hide_signature', False) # السطر المضاف
+        hide_signature=doc.get('hide_signature', False)
     )
     await show_ad_preview(callback.message, state)
     await callback.answer()
@@ -385,7 +373,7 @@ async def prompt_btn_text(callback: types.CallbackQuery, state: FSMContext):
     await state.set_state(AdForm.waiting_for_btn_text)
     await callback.answer()
 
-@router.message(AdForm.waiting_for_btn_text, F.text)
+@router.message(AdForm.waiting_for_btn_text, F.text & ~F.text.startswith('/'))
 async def process_btn_text(message: types.Message, state: FSMContext):
     await state.update_data(current_btn_text=message.text)
     data = await state.get_data()
@@ -399,7 +387,7 @@ async def process_btn_text(message: types.Message, state: FSMContext):
     await state.update_data(prompt_msg_id=msg.message_id)
     await state.set_state(AdForm.waiting_for_btn_url)
 
-@router.message(AdForm.waiting_for_btn_url, F.text)
+@router.message(AdForm.waiting_for_btn_url, F.text & ~F.text.startswith('/'))
 async def process_btn_url(message: types.Message, state: FSMContext):
     url = message.text.strip()
     data = await state.get_data()
@@ -512,7 +500,7 @@ async def delete_specific_btn(callback: types.CallbackQuery, state: FSMContext):
     else:
         await callback.answer("❌ لم أتمكن من العثور على الزر.", show_alert=True)
 
-@router.message(AdForm.waiting_for_specific_btn_text, F.text)
+@router.message(AdForm.waiting_for_specific_btn_text, F.text & ~F.text.startswith('/'))
 async def process_specific_btn_text(message: types.Message, state: FSMContext):
     await state.update_data(current_btn_text=message.text)
     data = await state.get_data()
@@ -526,7 +514,7 @@ async def process_specific_btn_text(message: types.Message, state: FSMContext):
     await state.update_data(prompt_msg_id=msg.message_id)
     await state.set_state(AdForm.waiting_for_specific_btn_url)
 
-@router.message(AdForm.waiting_for_specific_btn_url, F.text)
+@router.message(AdForm.waiting_for_specific_btn_url, F.text & ~F.text.startswith('/'))
 async def process_specific_btn_url(message: types.Message, state: FSMContext):
     url = message.text.strip()
     data = await state.get_data()
@@ -597,7 +585,7 @@ async def finish_ad(callback: types.CallbackQuery, state: FSMContext):
                 "description": data.get('description', ''),
                 "photo_id": data.get('photo_id'),
                 "buttons": buttons_json,
-                "hide_signature": data.get('hide_signature', False)  # تم الإضافة هنا
+                "hide_signature": data.get('hide_signature', False)
             }
             await asyncio.to_thread(db.collection("ads").document(doc_id).set, update_data, merge=True)
             short_id = data.get('ad_id') or doc_id[:6].upper()
@@ -651,12 +639,9 @@ async def finish_ad(callback: types.CallbackQuery, state: FSMContext):
                 merge=True
             )
 
-            # === كود سجل الإدارة المباشر (Log Group) الجديد ===
             if LOG_GROUP_ID:
                 try:
-                    # تحويل الآيدي إلى رقم إذا كان نصاً يمثل رقماً
                     target_chat = int(LOG_GROUP_ID) if LOG_GROUP_ID.strip().replace('-', '').isdigit() else LOG_GROUP_ID
-                    
                     merchant_name = callback.from_user.full_name
                     merchant_user = f"@{callback.from_user.username}" if callback.from_user.username else "بدون يوزر"
                     
@@ -674,7 +659,6 @@ async def finish_ad(callback: types.CallbackQuery, state: FSMContext):
                         await callback.bot.send_message(chat_id=target_chat, text=log_text, parse_mode="HTML")
                 except Exception as log_error:
                     print(f"خطأ أثناء إرسال السجل للمجموعة: {log_error}")
-            # =================================================
 
             success_text = (
                 f"✅ <b>تم إنشاء إعلانك بنجاح!</b>\n\n"
@@ -689,7 +673,7 @@ async def finish_ad(callback: types.CallbackQuery, state: FSMContext):
         await callback.message.answer(f"❌ حدث خطأ داخلي أثناء الحفظ.")
         await callback.answer()
 
-# ================= عرض الإعلانات (نظام الإخفاء) =================
+# ================= عرض الإعلانات =================
 @router.callback_query(F.data == "list_ads")
 async def list_my_ads(callback: types.CallbackQuery):
     await callback.answer()
@@ -767,9 +751,8 @@ async def view_ad_details(callback: types.CallbackQuery):
     ad = doc_snapshot.to_dict()
     desc = ad.get('description', '')
     photo_id = ad.get('photo_id')
-    hide_signature = ad.get('hide_signature', False) # جلب الحالة من الداتابيز
+    hide_signature = ad.get('hide_signature', False)
 
-    # دمج التوقيع فقط إذا لم يكن مخفياً
     if not hide_signature:
         signature = await get_ad_signature(str(callback.from_user.id), callback.from_user.first_name)
         full_desc = desc + signature if desc else signature
@@ -794,7 +777,6 @@ async def check_subscription(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     current_time = time.time()
 
-    # حماية السبام Cooldown
     if user_id in check_sub_cooldowns:
         time_passed = current_time - check_sub_cooldowns[user_id]
         if time_passed < COOLDOWN_SECONDS:
@@ -803,7 +785,6 @@ async def check_subscription(callback: types.CallbackQuery):
             return
 
     check_sub_cooldowns[user_id] = current_time
-
     subscribed = await is_user_subscribed(callback.bot, user_id, force_refresh=True)
     
     if subscribed:
@@ -834,8 +815,6 @@ async def return_to_start(callback: types.CallbackQuery):
 
     user_name = callback.from_user.first_name
     user_id = callback.from_user.id
-
-    # نتحقق من حالة اشتراكه هنا
     subscribed = await is_user_subscribed(callback.bot, user_id)
 
     welcome_text = (
@@ -845,7 +824,6 @@ async def return_to_start(callback: types.CallbackQuery):
     )
 
     try: 
-        # نمرر حالة الاشتراك لدالة القائمة لتعرف هل ترسم زر القفل أم لا
         await callback.message.edit_text(welcome_text, parse_mode="HTML", reply_markup=get_main_menu(subscribed))
     except TelegramBadRequest: 
         pass
@@ -857,7 +835,7 @@ async def delete_ad(callback: types.CallbackQuery):
     await callback.answer("✅ تم الحذف!", show_alert=True)
     await list_my_ads(callback)
 
-# ================= وضع الإنلاين (حماية المالكية + التوقيع) =================
+# ================= وضع الإنلاين =================
 @router.inline_query()
 async def inline_ad_search(inline_query: InlineQuery):
     query = inline_query.query.strip().upper()
@@ -868,7 +846,6 @@ async def inline_ad_search(inline_query: InlineQuery):
 
     ad_data = ads_list[0].to_dict()
     
-    # --- تطبيق الحماية الصارمة ---
     telegram_id = str(inline_query.from_user.id)
     merchant_data = await get_merchant_data(telegram_id)
     merchant_id = merchant_data.get("merchant_id")
@@ -876,7 +853,6 @@ async def inline_ad_search(inline_query: InlineQuery):
     if merchant_id != ad_data.get('merchant_id'):
         return
 
-    # --- معالجة التوقيع بناءً على اختيار التاجر ---
     original_desc = ad_data.get('description', '')
     photo_id = ad_data.get('photo_id')
     hide_signature = ad_data.get('hide_signature', False)
@@ -910,7 +886,7 @@ async def inline_ad_search(inline_query: InlineQuery):
 
     await inline_query.answer([result], cache_time=5)
 
-# ================= المراقبة الفورية (ChatMemberUpdated) =================
+# ================= المراقبة الفورية للاشتراكات =================
 @router.chat_member()
 async def chat_member_update_handler(event: types.ChatMemberUpdated):
     target_channel = CHANNEL_USERNAME.replace('@', '')
@@ -920,7 +896,6 @@ async def chat_member_update_handler(event: types.ChatMemberUpdated):
     user_id = str(event.from_user.id)
     new_status = event.new_chat_member.status
     
-    # حالة: غادر أو تم طرده
     if new_status in ['left', 'kicked']:
         await asyncio.to_thread(write_subscription_cache_sync, user_id, False, datetime.utcnow().isoformat())
         try:
@@ -932,8 +907,6 @@ async def chat_member_update_handler(event: types.ChatMemberUpdated):
             )
         except Exception: pass
 
-            
-    # حالة: انضم
     elif new_status in ['member', 'administrator', 'creator']:
         await asyncio.to_thread(write_subscription_cache_sync, user_id, True, datetime.utcnow().isoformat())
         try:
@@ -944,10 +917,11 @@ async def chat_member_update_handler(event: types.ChatMemberUpdated):
             )
         except Exception: pass
 
+# ================= أمر فحص الاشتراك =================
 @router.message(Command("check"))
 async def client_check_subscription(message: types.Message):
     await message.answer(
         f"📢 <b>الانضمام للقناة الرسمية:</b>\n\nيرجى الاشتراك في القناة وتفعيل التنبيهات، ثم اضغط على زر التحقق بالأسفل لتحديث صلاحيات حسابك.",
         reply_markup=get_subscribe_keyboard(),
         parse_mode="HTML"
-    )       
+    )
