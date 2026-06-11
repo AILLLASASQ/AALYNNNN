@@ -256,9 +256,9 @@ async def ignore_btn_click(callback: types.CallbackQuery):
 async def show_help(callback: types.CallbackQuery):
     help_text = (
         "📚 <b>دليل الاستخدام:</b>\n\n"
-        "1️⃣ اضغط إنشاء، وأرسل المحتوى، ثم استخدم لوحة التحكم لإضافة الأزرار.\n"
-        "2️⃣ بعد الحفظ، انسخ كود النشر والصقه في أي محادثة.\n\n"
-        f"💡 النظام يمنحك رصيد مجاني (تراكمي) لـ {FREE_LIMIT} إعلانات.\nالمشتركون في القناة يحصلون على {PAID_LIMIT} إعلانات نشطة بلا قيود تراكمية."
+        "1️⃣ اضغط إنشاء، وأرسل المحتوى، ثم استخدم لوحة التحكم لإضافة الأزرار\n"
+        "2️⃣ بعد الحفظ، انسخ كود النشر والصقه في أي محادثة\n\n"
+        f"💡 النظام يمنحك رصيد مجاني (تراكمي) لـ {FREE_LIMIT} إعلانات\nالمشتركون في القناة يحصلون على {PAID_LIMIT} إعلانات نشطة بلا قيود تراكمية"
     )
     markup = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 رجوع", callback_data="start_menu")]])
     try: await callback.message.edit_text(help_text, parse_mode="HTML", reply_markup=markup)
