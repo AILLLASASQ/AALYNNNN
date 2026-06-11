@@ -38,7 +38,7 @@ async def start_cmd(message: types.Message, state: FSMContext):
     
     welcome_text = (
         f"👋 <b>مرحباً بك يا {message.from_user.first_name} في بوت الإعلانات!</b>\n\n"
-        f"هذا البوت يتيح لك إنشاء إعلانات بأزرار شفافة (Inline Buttons) ومشاركتها في أي مكان بسهولة.\n\n"
+        f"هذا البوت يتيح لك إنشاء إعلانات بأزرار شفافة ( Inline ) ومشاركتها في أي مكان بسهولة.\n\n"
         f"👇 استخدم القائمة أدناه للبدء:"
     )
     
