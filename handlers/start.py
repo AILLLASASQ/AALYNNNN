@@ -28,10 +28,16 @@ async def start_cmd(message: types.Message, state: FSMContext):
             "is_banned": False
         })
     else:
+        data = doc.to_dict()
+        updates = {}
+        # إصلاح merchant_id المفقود للحسابات القديمة
+        if not data.get("merchant_id"):
+            updates["merchant_id"] = str(uuid.uuid4().hex[:6]).upper()
         # تحديث اليوزر نيم إذا تغير
-        current_username = message.from_user.username
-        if doc.to_dict().get("username") != current_username:
-            await asyncio.to_thread(doc_ref.set, {"username": current_username}, merge=True)
+        if data.get("username") != message.from_user.username:
+            updates["username"] = message.from_user.username
+        if updates:
+            await asyncio.to_thread(doc_ref.set, updates, merge=True)
 
     # التحقق من الاشتراك
     subscribed = await is_user_subscribed(message.bot, message.from_user.id)

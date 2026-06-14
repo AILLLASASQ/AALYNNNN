@@ -1,6 +1,7 @@
 import json
 import asyncio
 import time
+import uuid
 from datetime import datetime, timedelta
 from typing import List, Optional
 
@@ -195,9 +196,16 @@ def get_subscribe_keyboard():
 # ================= جلب بيانات التاجر والتوقيع =================
 async def get_merchant_data(telegram_id: str) -> dict:
     try:
-        doc_snapshot = await asyncio.to_thread(db.collection("merchants").document(telegram_id).get)
+        doc_ref = db.collection("merchants").document(telegram_id)
+        doc_snapshot = await asyncio.to_thread(doc_ref.get)
         if doc_snapshot.exists:
-            return doc_snapshot.to_dict()
+            data = doc_snapshot.to_dict()
+            # إصلاح تلقائي: توليد merchant_id إذا كان ناقصاً
+            if not data.get("merchant_id"):
+                new_id = str(uuid.uuid4().hex[:6]).upper()
+                await asyncio.to_thread(doc_ref.set, {"merchant_id": new_id}, merge=True)
+                data["merchant_id"] = new_id
+            return data
         return {}
     except Exception:
         return {}
