@@ -88,7 +88,7 @@ async def is_user_subscribed(bot: types.Bot, user_id: int, force_refresh: bool =
         return False
 
 # ================= الدوال المساعدة والترتيب =================
-def truncate_text(text, max_len=25):
+def truncate_text(text, max_len=30):
     if not text: return "زر"
     text = str(text)
     return text[:max_len] + "..." if len(text) > max_len else text
