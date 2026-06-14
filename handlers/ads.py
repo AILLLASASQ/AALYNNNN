@@ -36,7 +36,6 @@ class AdForm(StatesGroup):
     waiting_for_btn_url = State()
     waiting_for_specific_btn_text = State()
     waiting_for_specific_btn_url = State()
-    waiting_for_separator_text = State()
 
 # ================= دوال قاعدة البيانات (مساعدة للتزامن) =================
 def fetch_ads_by_merchant(merchant_id: str) -> List:
@@ -88,7 +87,7 @@ async def is_user_subscribed(bot: types.Bot, user_id: int, force_refresh: bool =
         return False
 
 # ================= الدوال المساعدة والترتيب =================
-def truncate_text(text, max_len=30):
+def truncate_text(text, max_len=25):
     if not text: return "زر"
     text = str(text)
     return text[:max_len] + "..." if len(text) > max_len else text
@@ -101,12 +100,6 @@ def normalize_buttons(buttons_data):
     if not buttons_data: return []
     if isinstance(buttons_data[0], list): return buttons_data
     return [[b] for b in buttons_data]
-
-def make_ad_button(btn):
-    # زر فاصل صامت (بدون رابط) أو زر رابط عادي
-    if btn.get('url'):
-        return InlineKeyboardButton(text=truncate_text(btn['text']), url=btn['url'])
-    return InlineKeyboardButton(text=truncate_text(btn['text']), callback_data="sep_noop")
 
 # ================= بناء واجهات الكيبورد =================
 def get_main_menu(is_subscribed=True):
@@ -129,14 +122,14 @@ def build_ad_markup(buttons_list):
     buttons_list = normalize_buttons(buttons_list)
     keyboard = []
     for row in buttons_list:
-        keyboard.append([make_ad_button(btn) for btn in row])
+        keyboard.append([InlineKeyboardButton(text=truncate_text(btn['text']), url=btn['url']) for btn in row])
     return InlineKeyboardMarkup(inline_keyboard=keyboard) if keyboard else None
 
 def build_merged_keyboard(buttons_list, doc_id):
     buttons_list = normalize_buttons(buttons_list)
     keyboard = []
     for row in buttons_list:
-        keyboard.append([make_ad_button(btn) for btn in row])
+        keyboard.append([InlineKeyboardButton(text=truncate_text(btn['text']), url=btn['url']) for btn in row])
 
     keyboard.append([InlineKeyboardButton(text="--- أدوات الإدارة ---", callback_data="ignore_btn")])
     keyboard.append([
@@ -169,25 +162,21 @@ def build_preview_keyboard(buttons_list, hide_signature=False):
             InlineKeyboardButton(text="➕ إضافة زر جديد", callback_data="add_btn_new"),
             sig_btn
         ])
-        keyboard.append([InlineKeyboardButton(text="📌 إضافة فاصل (نص فقط)", callback_data="add_separator")])
     else:
         for i, row in enumerate(buttons_list):
             kb_row = []
             for btn in row:
-                kb_row.append(make_ad_button(btn))
-
-            # زر "➕" لنفس الصف يظهر فقط إذا كان آخر زر رابطاً (مو فاصل)
-            if i == len(buttons_list) - 1 and len(row) < 2 and row[-1].get('url'):
+                kb_row.append(InlineKeyboardButton(text=truncate_text(btn['text']), url=btn['url']))
+            
+            if i == len(buttons_list) - 1 and len(row) < 2:
                 kb_row.append(InlineKeyboardButton(text="➕", callback_data="add_btn_same"))
-
+            
             keyboard.append(kb_row)
 
         keyboard.append([
             InlineKeyboardButton(text="⏬ زر بسطر جديد", callback_data="add_btn_new"),
             sig_btn
         ])
-
-        keyboard.append([InlineKeyboardButton(text="📌 إضافة فاصل (نص فقط)", callback_data="add_separator")])
 
         keyboard.append([
             InlineKeyboardButton(text="✏️ تعديل الأزرار", callback_data="select_btn_to_edit"),
@@ -270,11 +259,6 @@ async def show_ad_preview(message: types.Message, state: FSMContext, edit_mode=F
 @router.callback_query(F.data == "ignore_btn")
 async def ignore_btn_click(callback: types.CallbackQuery):
     await callback.answer("زر فاصِل ⚙️")
-
-@router.callback_query(F.data == "sep_noop")
-async def separator_noop(callback: types.CallbackQuery):
-    # زر فاصل صامت: لا يفعل شيئاً عند الضغط
-    await callback.answer()
 
 @router.callback_query(F.data == "help_usage")
 async def show_help(callback: types.CallbackQuery):
@@ -452,30 +436,6 @@ async def process_btn_url(message: types.Message, state: FSMContext):
         msg = await message.answer("❌ عذراً، تيليجرام يرفض هذا الرابط. يرجى إرسال رابط صالح:")
         await state.update_data(prompt_msg_id=msg.message_id)
 
-@router.callback_query(F.data == "add_separator")
-async def prompt_separator_text(callback: types.CallbackQuery, state: FSMContext):
-    msg = await callback.message.answer("📌 أرسل <b>نص الفاصل</b> (سيظهر كزر بدون أي إجراء):", parse_mode="HTML")
-    await state.update_data(prompt_msg_id=msg.message_id)
-    await state.set_state(AdForm.waiting_for_separator_text)
-    await callback.answer()
-
-@router.message(AdForm.waiting_for_separator_text, F.text & ~F.text.startswith('/'))
-async def process_separator_text(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-
-    try: await message.bot.delete_message(message.chat.id, data.get('prompt_msg_id'))
-    except TelegramBadRequest: pass
-    try: await message.delete()
-    except TelegramBadRequest: pass
-
-    buttons = normalize_buttons(data.get('buttons', []))
-    # الفاصل يُخزَّن بدون رابط (url=None) ويوضع دائماً في صف مستقل
-    buttons.append([{'text': message.text, 'url': None}])
-    await state.update_data(buttons=buttons)
-
-    await show_ad_preview(message, state, edit_mode=True)
-    await state.set_state(None)
-
 @router.callback_query(F.data == "select_btn_to_edit")
 async def select_btn_to_edit(callback: types.CallbackQuery, state: FSMContext):
     subscribed = await is_user_subscribed(callback.bot, callback.from_user.id)
@@ -516,15 +476,7 @@ async def ask_specific_btn_text(callback: types.CallbackQuery, state: FSMContext
     idx = int(callback.data.split("_")[-1])
     await state.update_data(editing_btn_idx=idx)
 
-    # تحديد إذا كان الزر المستهدف فاصلاً (بدون رابط)
-    data = await state.get_data()
-    buttons = normalize_buttons(data.get('buttons', []))
-    flat = [btn for row in buttons for btn in row]
-    is_separator = (idx < len(flat)) and not flat[idx].get('url')
-    await state.update_data(editing_separator=is_separator)
-
-    prompt = "📌 أرسل <b>نص الفاصل الجديد</b>:" if is_separator else "✏️ أرسل <b>الاسم الجديد</b> للزر:"
-    msg = await callback.message.answer(prompt, parse_mode="HTML")
+    msg = await callback.message.answer("✏️ أرسل <b>الاسم الجديد</b> للزر:", parse_mode="HTML")
     await state.update_data(prompt_msg_id=msg.message_id)
     await state.set_state(AdForm.waiting_for_specific_btn_text)
     await callback.answer()
@@ -565,25 +517,6 @@ async def process_specific_btn_text(message: types.Message, state: FSMContext):
     except TelegramBadRequest: pass
     try: await message.delete()
     except TelegramBadRequest: pass
-
-    # إذا كان فاصلاً: حدّث النص فقط وتجاوز خطوة الرابط
-    if data.get('editing_separator'):
-        buttons = normalize_buttons(data.get('buttons', []))
-        idx_to_edit = data.get('editing_btn_idx')
-        current_idx = 0
-        for r_idx, row in enumerate(buttons):
-            done = False
-            for c_idx in range(len(row)):
-                if current_idx == idx_to_edit:
-                    buttons[r_idx][c_idx] = {'text': message.text, 'url': None}
-                    done = True
-                    break
-                current_idx += 1
-            if done: break
-        await state.update_data(buttons=buttons, editing_separator=False)
-        await show_ad_preview(message, state, edit_mode=True)
-        await state.set_state(None)
-        return
 
     msg = await message.answer("🔗 ممتاز. أرسل الآن <b>الرابط الجديد</b> (https:// أو t.me/):", parse_mode="HTML")
     await state.update_data(prompt_msg_id=msg.message_id)
